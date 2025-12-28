@@ -1,19 +1,24 @@
-const tintColorLight = '#2f95dc';
-const tintColorDark = '#fff';
+/**
+ * Worlding Colors - Legacy compatibility
+ */
 
-export default {
+import { Colors as ThemeColors } from './theme';
+
+export const Colors = {
   light: {
     text: '#000',
     background: '#fff',
-    tint: tintColorLight,
+    tint: ThemeColors.accent,
     tabIconDefault: '#ccc',
-    tabIconSelected: tintColorLight,
+    tabIconSelected: ThemeColors.accent,
   },
   dark: {
-    text: '#fff',
-    background: '#000',
-    tint: tintColorDark,
-    tabIconDefault: '#ccc',
-    tabIconSelected: tintColorDark,
+    text: ThemeColors.textPrimary,
+    background: ThemeColors.background,
+    tint: ThemeColors.accent,
+    tabIconDefault: ThemeColors.textMuted,
+    tabIconSelected: ThemeColors.accent,
   },
 };
+
+export default Colors;
