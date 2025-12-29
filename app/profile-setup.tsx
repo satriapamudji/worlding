@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -28,10 +28,27 @@ import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme'
 import { useAuth } from '@/hooks/useAuth';
 import { createProfile, uploadAvatar } from '@/lib/api/profiles';
 
+type AuthMetadata = {
+  full_name?: string;
+  name?: string;
+  avatar_url?: string;
+  picture?: string;
+};
+
+const getMetadataString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 export default function ProfileSetupScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user, refreshProfile } = useAuth();
+  const hasAppliedPrefillRef = useRef(false);
 
   const [name, setName] = useState('');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
@@ -39,6 +56,32 @@ export default function ProfileSetupScreen() {
   const [error, setError] = useState<string | null>(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
+
+  const authProvider = (user?.app_metadata as { provider?: string } | undefined)?.provider;
+  const isGoogleAuth = authProvider === 'google';
+  const authMetadata = (user?.user_metadata as AuthMetadata | undefined) ?? {};
+  const preferredName = isGoogleAuth
+    ? getMetadataString(authMetadata.full_name) || getMetadataString(authMetadata.name) || ''
+    : '';
+  const preferredAvatarUrl = isGoogleAuth
+    ? getMetadataString(authMetadata.avatar_url) || getMetadataString(authMetadata.picture)
+    : null;
+
+  useEffect(() => {
+    if (hasAppliedPrefillRef.current || !user) {
+      return;
+    }
+
+    if (preferredName) {
+      setName(preferredName);
+    }
+
+    if (preferredAvatarUrl) {
+      setAvatarUri(preferredAvatarUrl);
+    }
+
+    hasAppliedPrefillRef.current = true;
+  }, [user, preferredName, preferredAvatarUrl]);
 
   const isValid = name.trim().length >= 2;
 
@@ -56,11 +99,14 @@ export default function ProfileSetupScreen() {
     triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
+      const isRemoteAvatar = !!avatarUri && /^https?:\/\//i.test(avatarUri);
+      const avatarUrl = isRemoteAvatar ? avatarUri : null;
+
       // Create the profile first
       const { error: createError } = await createProfile({
         id: user.id,
         name: name.trim(),
-        avatar_url: null, // Will update after upload if avatar selected
+        avatar_url: avatarUrl,
       });
 
       if (createError) {
@@ -69,8 +115,8 @@ export default function ProfileSetupScreen() {
         return;
       }
 
-      // Upload avatar if selected
-      if (avatarUri) {
+      // Upload avatar if selected from device
+      if (avatarUri && !isRemoteAvatar) {
         const { error: uploadError } = await uploadAvatar(avatarUri);
         if (uploadError) {
           // Profile created but avatar failed - show toast, continue to app

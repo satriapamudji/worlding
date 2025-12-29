@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Linking from 'expo-linking';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import * as MediaLibrary from 'expo-media-library';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +12,10 @@ import { SettingsRow } from '@/components/SettingsRow';
 import { SettingsSection } from '@/components/SettingsSection';
 import { SettingsToggle } from '@/components/SettingsToggle';
 import { Colors, Spacing, Typography } from '@/constants/theme';
+import { useAuth } from '@/hooks/useAuth';
+import { usePrivacyPrefs } from '@/hooks/usePrivacyPrefs';
+import { formatBytes } from '@/lib/api';
+import { clearCache, getCacheSize } from '@/lib/cache-utils';
 
 /**
  * Privacy Settings Screen
@@ -22,9 +27,13 @@ import { Colors, Spacing, Typography } from '@/constants/theme';
  * - Data management
  * - Account deletion
  */
+const SUPPORT_EMAIL = 'contact@worlding.fun';
+
 export default function PrivacyScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { prefs, loading: prefsLoading, updatePrefs } = usePrivacyPrefs();
 
   // Photo settings
   const [autoSync, setAutoSync] = useState(true);
@@ -37,18 +46,139 @@ export default function PrivacyScreen() {
   // Legal modal
   const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
 
-  // Mock cache size - TODO: Get from actual cache
-  const [cacheSize] = useState('128 MB');
+  // Device data
+  const [photoAccessLabel, setPhotoAccessLabel] = useState('Checking...');
+  const [cacheSizeBytes, setCacheSizeBytes] = useState<number | null>(null);
+  const [cacheLoading, setCacheLoading] = useState(true);
+  const [cacheError, setCacheError] = useState(false);
+  const [isClearingCache, setIsClearingCache] = useState(false);
 
-  const openSystemSettings = () => {
+  const excludedAlbumCount = prefs.excludedAlbums.length;
+  const excludedAlbumLabel = Platform.OS === 'web'
+    ? 'Not available'
+    : prefsLoading
+      ? 'Loading...'
+      : excludedAlbumCount === 0
+        ? 'None'
+        : `${excludedAlbumCount} ${excludedAlbumCount === 1 ? 'album' : 'albums'}`;
+
+  const cacheSizeLabel = Platform.OS === 'web'
+    ? 'Not available'
+    : cacheLoading
+      ? 'Calculating...'
+      : cacheError
+        ? 'Unavailable'
+        : formatBytes(cacheSizeBytes ?? 0);
+
+  const canClearCache = Platform.OS !== 'web'
+    && !cacheLoading
+    && !cacheError
+    && !isClearingCache
+    && (cacheSizeBytes ?? 0) > 0;
+
+  const autoSyncDisabled = prefsLoading;
+  const uploadSettingsDisabled = prefsLoading || !autoSync;
+  const excludedAlbumsDisabled = Platform.OS === 'web';
+
+  useEffect(() => {
+    if (prefsLoading) return;
+    setAutoSync(prefs.autoSync);
+    setUploadOriginal(prefs.uploadOriginal);
+    setUseCellular(prefs.useCellular);
+    setShowActivity(prefs.showActivity);
+  }, [prefs, prefsLoading]);
+
+  const openSystemSettings = useCallback(() => {
     if (Platform.OS === 'ios') {
       Linking.openURL('app-settings:');
     } else {
       Linking.openSettings();
     }
-  };
+  }, []);
 
-  const handleClearCache = () => {
+  const refreshPhotoAccess = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      setPhotoAccessLabel('Not available');
+      return;
+    }
+
+    const permission = await MediaLibrary.getPermissionsAsync();
+
+    if (permission.status !== 'granted') {
+      setPhotoAccessLabel('No Access');
+      return;
+    }
+
+    if (permission.accessPrivileges === 'limited') {
+      setPhotoAccessLabel('Limited');
+      return;
+    }
+
+    setPhotoAccessLabel('Full Access');
+  }, []);
+
+  const loadCacheSize = useCallback(async () => {
+    if (Platform.OS === 'web') {
+      setCacheSizeBytes(null);
+      setCacheLoading(false);
+      setCacheError(false);
+      return;
+    }
+
+    setCacheLoading(true);
+    setCacheError(false);
+
+    try {
+      const size = await getCacheSize();
+      setCacheSizeBytes(size);
+    } catch {
+      setCacheError(true);
+    } finally {
+      setCacheLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshPhotoAccess();
+      void loadCacheSize();
+    }, [loadCacheSize, refreshPhotoAccess]),
+  );
+
+  const handleAutoSyncToggle = useCallback((value: boolean) => {
+    setAutoSync(value);
+    updatePrefs({ autoSync: value });
+  }, [updatePrefs]);
+
+  const handleUploadOriginalToggle = useCallback((value: boolean) => {
+    setUploadOriginal(value);
+    updatePrefs({ uploadOriginal: value });
+  }, [updatePrefs]);
+
+  const handleUseCellularToggle = useCallback((value: boolean) => {
+    setUseCellular(value);
+    updatePrefs({ useCellular: value });
+  }, [updatePrefs]);
+
+  const handleShowActivityToggle = useCallback((value: boolean) => {
+    setShowActivity(value);
+    updatePrefs({ showActivity: value });
+  }, [updatePrefs]);
+
+  const clearCacheFlow = useCallback(async () => {
+    setIsClearingCache(true);
+    try {
+      await clearCache();
+      await loadCacheSize();
+    } catch {
+      Alert.alert('Unable to clear cache', 'Please try again later.');
+    } finally {
+      setIsClearingCache(false);
+    }
+  }, [loadCacheSize]);
+
+  const handleClearCache = useCallback(() => {
+    if (!canClearCache) return;
     Alert.alert(
       'Clear Cache',
       'This will remove cached photos from your device. Photos will be re-downloaded when you view them.',
@@ -56,52 +186,57 @@ export default function PrivacyScreen() {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear Cache',
+          style: 'destructive',
           onPress: () => {
-            // TODO: Implement cache clearing
-            console.log('Cache cleared');
+            void clearCacheFlow();
           },
         },
       ]
     );
-  };
+  }, [canClearCache, clearCacheFlow]);
 
-  const handleExcludedAlbums = () => {
-    // TODO: Navigate to excluded albums screen
-    Alert.alert(
-      'Excluded Albums',
-      'Choose which albums to exclude from auto-sync:\n\n• Screenshots\n• Screen Recordings\n• Downloads\n• Recently Deleted',
-      [{ text: 'OK' }]
-    );
-  };
+  const handleExcludedAlbums = useCallback(() => {
+    router.push('/settings/excluded-albums');
+  }, [router]);
 
-  const handleExportData = () => {
+  const openSupportEmail = useCallback((subject: string, body: string) => {
+    const mailto = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    Linking.openURL(mailto).catch(() => {
+      Alert.alert('Unable to open email app', `Please email us at ${SUPPORT_EMAIL}.`);
+    });
+  }, []);
+
+  const handleExportData = useCallback(() => {
+    const userEmail = user?.email ? ` (${user.email})` : '';
+    const body = `Hi Worlding team,\n\nPlease export my data${userEmail}.\n\nThanks.`;
     Alert.alert(
       'Export Your Data',
-      'We\'ll prepare a download of all your photos and data. You\'ll receive an email when it\'s ready.',
+      'We will send you an email with a download link once your export is ready.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Request Export', onPress: () => console.log('Export requested') },
+        { text: 'Request Export', onPress: () => openSupportEmail('Data export request', body) },
       ]
     );
-  };
+  }, [openSupportEmail, user?.email]);
 
-  const handleDeleteAccount = () => {
+  const handleDeleteAccount = useCallback(() => {
+    const userEmail = user?.email ? ` (${user.email})` : '';
+    const body = `Hi Worlding team,\n\nPlease delete my account${userEmail}.\n\nI understand this cannot be undone.\n`;
     Alert.alert(
       'Delete Account',
       'This will permanently delete your account, all your Worlds, and photos. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete Account',
+          text: 'Request Deletion',
           style: 'destructive',
           onPress: () => {
-            // TODO: Implement account deletion
-            console.log('Account deletion requested');
+            openSupportEmail('Account deletion request', body);
           },
         },
       ]
     );
-  };
+  }, [openSupportEmail, user?.email]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -132,19 +267,22 @@ export default function PrivacyScreen() {
               label="Auto-Sync Photos"
               description="Sync photos during World dates"
               value={autoSync}
-              onValueChange={setAutoSync}
+              onValueChange={handleAutoSyncToggle}
+              disabled={autoSyncDisabled}
             />
             <SettingsRow
               icon="folder-open-outline"
               label="Photo Library Access"
-              value="Full Access"
+              value={photoAccessLabel}
               onPress={openSystemSettings}
+              disabled={Platform.OS === 'web'}
             />
             <SettingsRow
               icon="ban-outline"
               label="Excluded Albums"
-              value="3 albums"
-              onPress={handleExcludedAlbums}
+              value={excludedAlbumLabel}
+              onPress={excludedAlbumsDisabled ? undefined : handleExcludedAlbums}
+              disabled={excludedAlbumsDisabled}
             />
           </SettingsSection>
         </Animated.View>
@@ -154,8 +292,8 @@ export default function PrivacyScreen() {
           <SettingsSection
             title="Upload"
             footer={uploadOriginal
-              ? "Original photos use more data and storage but preserve full quality."
-              : "Optimized photos are smaller but still high quality."
+              ? 'Original photos use more data and storage but preserve full quality.'
+              : 'Optimized photos are smaller but still high quality.'
             }
           >
             <SettingsToggle
@@ -163,14 +301,16 @@ export default function PrivacyScreen() {
               label="Upload Original Quality"
               description="Use full resolution photos"
               value={uploadOriginal}
-              onValueChange={setUploadOriginal}
+              onValueChange={handleUploadOriginalToggle}
+              disabled={uploadSettingsDisabled}
             />
             <SettingsToggle
               icon="cellular-outline"
               label="Use Cellular Data"
               description="Sync photos over mobile data"
               value={useCellular}
-              onValueChange={setUseCellular}
+              onValueChange={handleUseCellularToggle}
+              disabled={uploadSettingsDisabled}
             />
           </SettingsSection>
         </Animated.View>
@@ -184,13 +324,15 @@ export default function PrivacyScreen() {
             <SettingsRow
               icon="server-outline"
               label="Cached Photos"
-              value={cacheSize}
+              value={cacheSizeLabel}
               showChevron={false}
             />
             <SettingsRow
               icon="trash-outline"
               label="Clear Cache"
+              value={isClearingCache ? 'Clearing...' : undefined}
               onPress={handleClearCache}
+              disabled={!canClearCache}
             />
           </SettingsSection>
         </Animated.View>
@@ -206,7 +348,8 @@ export default function PrivacyScreen() {
               label="Show Activity Status"
               description="Let others see when you're active"
               value={showActivity}
-              onValueChange={setShowActivity}
+              onValueChange={handleShowActivityToggle}
+              disabled={prefsLoading}
             />
           </SettingsSection>
         </Animated.View>

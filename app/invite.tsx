@@ -11,12 +11,15 @@ import {
   StyleSheet,
   Text,
   View,
+  Modal,
 } from 'react-native';
-import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
+import QRCode from 'react-native-qrcode-svg';
+import { BlurView } from 'expo-blur';
+import Animated, { FadeIn, FadeInUp, ZoomIn, FadeOut } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
-import { createInviteCode, getInviteUrl, getTimeRemaining } from '@/lib/api/invites';
+import { Colors, Radius, Spacing, Typography, Shadows } from '@/constants/theme';
+import { createInviteCode, getActiveInviteCodes, getInviteUrl, getTimeRemaining } from '@/lib/api/invites';
 
 /**
  * Invite Screen
@@ -36,9 +39,10 @@ export default function InviteScreen() {
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showQR, setShowQR] = useState(false);
 
-  // Generate invite code on mount
-  const generateInviteCode = useCallback(async () => {
+  // Load active invite code or create a new one
+  const loadInviteCode = useCallback(async () => {
     if (!params.worldId) {
       setError('Invalid world');
       setIsLoading(false);
@@ -48,10 +52,20 @@ export default function InviteScreen() {
     setIsLoading(true);
     setError(null);
 
+    const { data: activeCodes, error: activeError } = await getActiveInviteCodes(params.worldId);
+
+    const activeCode = activeCodes[0];
+    if (activeCode) {
+      setInviteCode(activeCode.code);
+      setExpiresAt(activeCode.expires_at);
+      setIsLoading(false);
+      return;
+    }
+
     const { data, error: codeError } = await createInviteCode(params.worldId);
 
     if (codeError || !data) {
-      setError(codeError || 'Failed to generate invite code');
+      setError(codeError || activeError || 'Failed to generate invite code');
       setIsLoading(false);
       return;
     }
@@ -62,8 +76,8 @@ export default function InviteScreen() {
   }, [params.worldId]);
 
   useEffect(() => {
-    generateInviteCode();
-  }, [generateInviteCode]);
+    loadInviteCode();
+  }, [loadInviteCode]);
 
   const inviteLink = inviteCode ? getInviteUrl(inviteCode) : '';
   const timeRemaining = expiresAt ? getTimeRemaining(expiresAt) : '';
@@ -130,15 +144,19 @@ export default function InviteScreen() {
     router.replace('/(tabs)');
   };
 
-  const handleScanQR = () => {
+  const handleShowQR = () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    router.push('/scan');
+    setShowQR(true);
+  };
+
+  const handleCloseQR = () => {
+    setShowQR(false);
   };
 
   const handleRetry = () => {
-    generateInviteCode();
+    loadInviteCode();
   };
 
   return (
@@ -176,7 +194,7 @@ export default function InviteScreen() {
         {isLoading && (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={Colors.accent} />
-            <Text style={styles.loadingText}>Generating invite code...</Text>
+            <Text style={styles.loadingText}>Loading invite code...</Text>
           </View>
         )}
 
@@ -248,20 +266,20 @@ export default function InviteScreen() {
               </Pressable>
             </Animated.View>
 
-            {/* Scan QR Button */}
+            {/* Show QR Button */}
             <Animated.View
               entering={FadeInUp.delay(450).duration(400)}
               style={styles.scanContainer}
             >
               <Pressable
-                onPress={handleScanQR}
+                onPress={handleShowQR}
                 style={({ pressed }) => [
                   styles.scanButton,
                   pressed && styles.scanButtonPressed,
                 ]}
               >
                 <Ionicons name="qr-code-outline" size={20} color={Colors.textPrimary} />
-                <Text style={styles.scanButtonText}>Scan QR Code</Text>
+                <Text style={styles.scanButtonText}>Show QR Code</Text>
               </Pressable>
             </Animated.View>
 
@@ -300,6 +318,57 @@ export default function InviteScreen() {
           You can always invite more people later from the world settings
         </Text>
       </Animated.View>
+
+      {/* QR Code Modal */}
+      <Modal
+        visible={showQR}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCloseQR}
+        statusBarTranslucent
+      >
+        <BlurView intensity={20} tint="dark" style={StyleSheet.absoluteFill}>
+          <Pressable style={styles.modalOverlay} onPress={handleCloseQR}>
+            <Animated.View 
+              entering={ZoomIn.duration(300)} 
+              exiting={FadeOut.duration(200)}
+              style={styles.modalContent}
+            >
+              <Pressable style={styles.modalInner} onPress={e => e.stopPropagation()}>
+                <Text style={styles.qrTitle}>Scan to Join</Text>
+                
+                <View style={styles.qrContainer}>
+                  {inviteLink ? (
+                    <QRCode
+                      value={inviteLink}
+                      size={200}
+                      color="black"
+                      backgroundColor="white"
+                    />
+                  ) : null}
+                </View>
+
+                <Text style={styles.qrWorldName}>
+                  {params.worldName || 'World'}
+                </Text>
+                <Text style={styles.qrSubtitle}>
+                  Invite Code: {inviteCode}
+                </Text>
+
+                <Pressable
+                  onPress={handleCloseQR}
+                  style={({ pressed }) => [
+                    styles.closeButton,
+                    pressed && styles.closeButtonPressed,
+                  ]}
+                >
+                  <Ionicons name="close" size={24} color={Colors.textPrimary} />
+                </Pressable>
+              </Pressable>
+            </Animated.View>
+          </Pressable>
+        </BlurView>
+      </Modal>
     </View>
   );
 }
@@ -522,5 +591,64 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     fontSize: Typography.sizes.sm,
     textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.xl,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.xl,
+    padding: Spacing.xl,
+    ...Shadows.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  modalInner: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  qrTitle: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.xl,
+    fontWeight: '700',
+    marginBottom: Spacing.lg,
+  },
+  qrContainer: {
+    padding: Spacing.lg,
+    backgroundColor: 'white',
+    borderRadius: Radius.lg,
+    marginBottom: Spacing.lg,
+    ...Shadows.md,
+  },
+  qrWorldName: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.lg,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginBottom: Spacing.xs,
+  },
+  qrSubtitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
+    textAlign: 'center',
+    marginBottom: Spacing.xl,
+  },
+  closeButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  closeButtonPressed: {
+    backgroundColor: Colors.border,
   },
 });

@@ -9,10 +9,52 @@ import React, {
 } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 
+import { createProfile } from '@/lib/api/profiles';
 import { supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/database.types';
 
 const SESSION_BOOTSTRAP_TIMEOUT_MS = 5000;
+
+type AuthMetadata = {
+  full_name?: string;
+  name?: string;
+  avatar_url?: string;
+  picture?: string;
+};
+
+const getMetadataString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const getGoogleProfileMetadata = (
+  user: User
+): { name: string; avatarUrl: string | null } | null => {
+  if (user.app_metadata?.provider !== 'google') {
+    return null;
+  }
+
+  const metadata = (user.user_metadata as AuthMetadata | undefined) ?? {};
+  const emailName = user.email ? user.email.split('@')[0] : null;
+  const name =
+    getMetadataString(metadata.full_name) ||
+    getMetadataString(metadata.name) ||
+    getMetadataString(emailName);
+
+  if (!name) {
+    return null;
+  }
+
+  const avatarUrl =
+    getMetadataString(metadata.avatar_url) ||
+    getMetadataString(metadata.picture);
+
+  return { name, avatarUrl: avatarUrl ?? null };
+};
 
 interface AuthContextValue {
   session: Session | null;
@@ -38,18 +80,50 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [profileLoading, setProfileLoading] = useState(false);
 
   // Fetch profile for a user
-  const fetchProfile = useCallback(async (userId: string) => {
+  const fetchProfile = useCallback(async (user: User) => {
     setProfileLoading(true);
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('id', userId)
+        .eq('id', user.id)
         .single();
       
       if (error) {
-        // Profile doesn't exist - user needs onboarding
+        // Profile doesn't exist - try auto-create for Google OAuth.
         if (error.code === 'PGRST116') {
+          const googleProfile = getGoogleProfileMetadata(user);
+          if (googleProfile) {
+            const { data: createdProfile, error: createError } = await createProfile({
+              id: user.id,
+              name: googleProfile.name,
+              avatar_url: googleProfile.avatarUrl,
+            });
+
+            if (createError) {
+              console.warn('Failed to auto-create profile:', createError);
+
+              const { data: retryProfile, error: retryError } = await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', user.id)
+                .single();
+
+              if (!retryError && retryProfile) {
+                setProfile(retryProfile as Profile);
+                return;
+              }
+
+              setProfile(null);
+              return;
+            }
+
+            if (createdProfile) {
+              setProfile(createdProfile);
+              return;
+            }
+          }
+
           setProfile(null);
           return;
         }
@@ -69,10 +143,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Refresh profile (called after onboarding or profile updates)
   const refreshProfile = useCallback(async () => {
-    if (session?.user?.id) {
-      await fetchProfile(session.user.id);
+    if (session?.user) {
+      await fetchProfile(session.user);
     }
-  }, [session?.user?.id, fetchProfile]);
+  }, [session?.user, fetchProfile]);
 
   useEffect(() => {
     let isMounted = true;
@@ -101,8 +175,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const currentSession = data.session ?? null;
         setSession(currentSession);
 
-        if (currentSession?.user?.id) {
-          void fetchProfile(currentSession.user.id);
+        if (currentSession?.user) {
+          void fetchProfile(currentSession.user);
         } else {
           setProfile(null);
           setProfileLoading(false);
@@ -121,8 +195,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setSession(newSession ?? null);
 
       // When user signs in/out, update profile
-      if (newSession?.user?.id) {
-        void fetchProfile(newSession.user.id);
+      if (newSession?.user) {
+        void fetchProfile(newSession.user);
       } else {
         setProfile(null);
         setProfileLoading(false);

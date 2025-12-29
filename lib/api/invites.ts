@@ -4,6 +4,8 @@
  * Functions for creating and validating invite codes.
  */
 
+import type { User } from '@supabase/supabase-js';
+
 import { supabase } from '@/lib/supabase';
 import type {
   ApiResponse,
@@ -12,6 +14,48 @@ import type {
   InviteValidationResult,
   JoinWorldResult,
 } from '@/lib/database.types';
+
+type AuthMetadata = {
+  full_name?: string;
+  name?: string;
+  avatar_url?: string;
+  picture?: string;
+};
+
+const getMetadataString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const getGoogleProfileMetadata = (
+  user: User
+): { name: string; avatarUrl: string | null } | null => {
+  if (user.app_metadata?.provider !== 'google') {
+    return null;
+  }
+
+  const metadata = (user.user_metadata as AuthMetadata | undefined) ?? {};
+  const emailName = user.email ? user.email.split('@')[0] : null;
+  const name =
+    getMetadataString(metadata.full_name) ||
+    getMetadataString(metadata.name) ||
+    getMetadataString(emailName);
+
+  if (!name) {
+    return null;
+  }
+
+  const avatarUrl =
+    getMetadataString(metadata.avatar_url) ||
+    getMetadataString(metadata.picture);
+
+  return { name, avatarUrl: avatarUrl ?? null };
+};
+
 
 /**
  * Create a new invite code for a world
@@ -56,6 +100,41 @@ export async function validateInviteCode(
 export async function joinWorldWithCode(
   code: string
 ): Promise<ApiResponse<JoinWorldResult>> {
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !authData.user) {
+    return { data: null, error: 'Not authenticated' };
+  }
+
+  const { data: profile, error: profileError } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('id', authData.user.id)
+    .maybeSingle();
+
+  if (profileError) {
+    return { data: null, error: profileError.message };
+  }
+
+  if (!profile) {
+    const googleProfile = getGoogleProfileMetadata(authData.user);
+    if (!googleProfile) {
+      return { data: null, error: 'Complete your profile to join this world.' };
+    }
+
+    const { error: createError } = await supabase
+      .from('profiles')
+      .insert({
+        id: authData.user.id,
+        name: googleProfile.name,
+        avatar_url: googleProfile.avatarUrl,
+      });
+
+    if (createError) {
+      return { data: null, error: createError.message };
+    }
+  }
+
   const { data, error } = await supabase
     .rpc('join_world_with_code', { p_code: code.toUpperCase() });
   
@@ -127,7 +206,9 @@ export async function deleteInviteCode(codeId: string): Promise<ApiResponse<null
  * Generate the full invite URL for a code
  */
 export function getInviteUrl(code: string): string {
-  return `https://worlding.app/join/${code}`;
+  // Uses custom URL scheme to open directly in app when QR code is scanned
+  // TODO: Change to https://worlding.app/join/${code} when domain is configured
+  return `worlding://join/${code}`;
 }
 
 /**

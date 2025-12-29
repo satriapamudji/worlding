@@ -29,6 +29,7 @@ export default function SettingsLayout() {
         <Stack.Screen name="edit-profile" />
         <Stack.Screen name="notifications" />
         <Stack.Screen name="privacy" />
+        <Stack.Screen name="excluded-albums" />
       </Stack>
     </RequireAuth>
   );

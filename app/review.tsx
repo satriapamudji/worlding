@@ -20,7 +20,15 @@ import { PhotoGrid, Toast } from '@/components';
 import type { Photo } from '@/components/PhotoGrid';
 import { RequireAuth } from '@/components/RequireAuth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { usePrivacyPrefs } from '@/hooks/usePrivacyPrefs';
 import { uploadMultipleMedia, updateSyncStatus } from '@/lib/api';
+import {
+  getHiddenPhotos,
+  getPreSelectedIds,
+  getVisiblePhotos,
+  loadPhotosWithFiltering,
+  type FilteredPhoto,
+} from '@/lib/photo-filter';
 
 // ============================================================================
 // TYPES
@@ -36,36 +44,15 @@ interface UploadProgress {
 // HELPERS
 // ============================================================================
 
-/**
- * Transform MediaLibrary asset to Photo format for PhotoGrid
- */
-function assetToPhoto(asset: MediaLibrary.Asset): Photo {
+function toGridPhoto(photo: FilteredPhoto): Photo {
   return {
-    id: asset.id,
-    uri: asset.uri,
-    type: asset.mediaType === 'video' ? 'video' : 'image',
-    width: asset.width,
-    height: asset.height,
-    duration: asset.duration,
+    id: photo.id,
+    uri: photo.localUri || photo.uri,
+    type: photo.type,
+    width: photo.width,
+    height: photo.height,
+    duration: photo.duration,
   };
-}
-
-/**
- * Get end of day timestamp for a date string
- */
-function getEndOfDay(dateString: string): number {
-  const date = new Date(dateString);
-  date.setHours(23, 59, 59, 999);
-  return date.getTime();
-}
-
-/**
- * Get start of day timestamp for a date string
- */
-function getStartOfDay(dateString: string): number {
-  const date = new Date(dateString);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
 }
 
 // ============================================================================
@@ -87,6 +74,7 @@ export default function ReviewScreen() {
     endDate?: string;
     coverUri?: string;
   }>();
+  const { prefs, loading: privacyLoading } = usePrivacyPrefs();
 
   // Permission state
   const [permissionStatus, setPermissionStatus] = useState<MediaLibrary.PermissionStatus | null>(null);
@@ -97,8 +85,9 @@ export default function ReviewScreen() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
 
   // Data state
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [filteredPhotos, setFilteredPhotos] = useState<FilteredPhoto[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<'included' | 'hidden'>('included');
 
   // Toast state
   const [toast, setToast] = useState<{ visible: boolean; message: string }>({
@@ -106,9 +95,33 @@ export default function ReviewScreen() {
     message: '',
   });
 
-  // Computed values
-  const allSelected = selectedIds.length === photos.length && photos.length > 0;
+  const excludedAlbumIds = useMemo(
+    () => prefs.excludedAlbums.map((album) => album.id),
+    [prefs.excludedAlbums]
+  );
+
+  const visiblePhotos = useMemo(
+    () => getVisiblePhotos(filteredPhotos),
+    [filteredPhotos]
+  );
+
+  const hiddenPhotos = useMemo(
+    () => getHiddenPhotos(filteredPhotos),
+    [filteredPhotos]
+  );
+
+  const totalCount = filteredPhotos.length;
+  const tabPhotos = activeTab === 'included' ? visiblePhotos : hiddenPhotos;
+  const tabPhotoIds = useMemo(() => tabPhotos.map((photo) => photo.id), [tabPhotos]);
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedInTab = useMemo(
+    () => tabPhotoIds.filter((id) => selectedIdSet.has(id)).length,
+    [selectedIdSet, tabPhotoIds]
+  );
+
+  const allSelectedInTab = tabPhotoIds.length > 0 && selectedInTab === tabPhotoIds.length;
   const hasSelection = selectedIds.length > 0;
+  const gridPhotos = useMemo(() => tabPhotos.map(toGridPhoto), [tabPhotos]);
 
   // ============================================================================
   // PERMISSIONS & DATA LOADING
@@ -127,6 +140,9 @@ export default function ReviewScreen() {
 
     const { status } = await MediaLibrary.requestPermissionsAsync();
     setPermissionStatus(status);
+    if (status !== 'granted') {
+      setLoading(false);
+    }
     return status;
   }, []);
 
@@ -141,45 +157,36 @@ export default function ReviewScreen() {
     }
 
     try {
-      const startTimestamp = getStartOfDay(params.startDate);
-      const endTimestamp = getEndOfDay(params.endDate);
-
-      // Query camera roll
-      const { assets } = await MediaLibrary.getAssetsAsync({
-        mediaType: ['photo', 'video'],
-        createdAfter: startTimestamp,
-        createdBefore: endTimestamp,
-        sortBy: [[MediaLibrary.SortBy.creationTime, false]], // Newest first
-        first: 500, // Reasonable limit
+      setLoading(true);
+      const result = await loadPhotosWithFiltering({
+        startDate: params.startDate,
+        endDate: params.endDate,
+        excludedAlbumIds,
+        pageSize: 500,
       });
 
-      // Transform to Photo format
-      const photoList = assets.map(assetToPhoto);
-      setPhotos(photoList);
-
-      // Select all by default
-      setSelectedIds(photoList.map(p => p.id));
+      setFilteredPhotos(result.photos);
+      setSelectedIds(getPreSelectedIds(result.photos));
+      setActiveTab('included');
     } catch (error) {
       console.error('Error loading photos:', error);
     } finally {
       setLoading(false);
     }
-  }, [params.startDate, params.endDate]);
+  }, [excludedAlbumIds, params.endDate, params.startDate]);
 
   /**
    * Initialize: request permissions and load photos
    */
   useEffect(() => {
-    const init = async () => {
-      const status = await requestPermission();
-      if (status === 'granted') {
-        await loadPhotos();
-      } else {
-        setLoading(false);
-      }
-    };
-    init();
-  }, [requestPermission, loadPhotos]);
+    void requestPermission();
+  }, [requestPermission]);
+
+  useEffect(() => {
+    if (permissionStatus !== 'granted') return;
+    if (privacyLoading) return;
+    void loadPhotos();
+  }, [permissionStatus, privacyLoading, loadPhotos]);
 
   // ============================================================================
   // HANDLERS
@@ -193,7 +200,17 @@ export default function ReviewScreen() {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    setSelectedIds(allSelected ? [] : photos.map(p => p.id));
+    if (tabPhotoIds.length === 0) return;
+
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelectedInTab) {
+        tabPhotoIds.forEach((id) => next.delete(id));
+      } else {
+        tabPhotoIds.forEach((id) => next.add(id));
+      }
+      return Array.from(next);
+    });
   };
 
   const handleClose = () => {
@@ -227,26 +244,17 @@ export default function ReviewScreen() {
       // Update sync status to 'syncing'
       await updateSyncStatus(params.worldId, 'syncing');
 
-      // Get full asset info for selected photos (need local URI)
-      const selectedPhotos = photos.filter(p => selectedIds.includes(p.id));
-      
-      // Prepare files for upload
-      const files = await Promise.all(
-        selectedPhotos.map(async (photo) => {
-          // Get asset info to get the local URI
-          const assetInfo = await MediaLibrary.getAssetInfoAsync(photo.id);
-          return {
-            uri: assetInfo.localUri || photo.uri,
-            type: photo.type || 'image',
-            width: photo.width,
-            height: photo.height,
-            duration: photo.duration,
-            takenAt: assetInfo.creationTime
-              ? new Date(assetInfo.creationTime).toISOString()
-              : undefined,
-          };
-        })
-      );
+      const selectedPhotos = filteredPhotos.filter((photo) => selectedIds.includes(photo.id));
+      const files = selectedPhotos.map((photo) => ({
+        uri: photo.localUri || photo.uri,
+        type: photo.type,
+        width: photo.width,
+        height: photo.height,
+        duration: photo.duration,
+        takenAt: photo.creationTime
+          ? new Date(photo.creationTime).toISOString()
+          : undefined,
+      }));
 
       // Upload with progress tracking
       const result = await uploadMultipleMedia(
@@ -296,7 +304,7 @@ export default function ReviewScreen() {
       setUploading(false);
       setUploadProgress(null);
     }
-  }, [params.worldId, params.worldName, selectedIds, photos]);
+  }, [filteredPhotos, params.worldId, params.worldName, selectedIds]);
 
   const handleToastHide = useCallback(() => {
     setToast({ visible: false, message: '' });
@@ -445,7 +453,7 @@ export default function ReviewScreen() {
   }
 
   // Empty state
-  if (photos.length === 0) {
+  if (totalCount === 0) {
     return (
       <RequireAuth>
         <SafeAreaView style={styles.container}>
@@ -467,7 +475,7 @@ export default function ReviewScreen() {
 
           <View style={styles.headerContent}>
             <Text style={styles.headerTitle}>
-              Found {photos.length} memories
+              Found {totalCount} memories
             </Text>
             <Text style={styles.headerSubtitle}>
               from {params.worldName || 'your camera roll'}
@@ -479,38 +487,117 @@ export default function ReviewScreen() {
             onPress={handleToggleSelectAll}
           >
             <Text style={styles.selectAllText}>
-              {allSelected ? 'Deselect All' : 'Select All'}
+              {allSelectedInTab ? 'Deselect All' : 'Select All'}
             </Text>
           </Pressable>
         </Animated.View>
 
-        {/* Scanning Complete Banner */}
-        <Animated.View
-          entering={FadeInUp.delay(200).duration(400)}
-          style={styles.scanComplete}
-        >
-          <LinearGradient
-            colors={['rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0.05)']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.scanCompleteGradient}
+        {/* Tabs */}
+        <View style={styles.tabSection}>
+          <Pressable
+            onPress={() => setActiveTab('included')}
+            style={styles.tabItem}
           >
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === 'included' && styles.tabTextActive,
+              ]}
+            >
+              Recommended ({visiblePhotos.length})
+            </Text>
+            {activeTab === 'included' && <View style={styles.tabIndicator} />}
+          </Pressable>
+
+          <Pressable
+            onPress={() => setActiveTab('hidden')}
+            style={styles.tabItem}
+          >
+            <Text
+              style={[
+                styles.tabText,
+                activeTab === 'hidden' && styles.tabTextActive,
+              ]}
+            >
+              Hidden ({hiddenPhotos.length})
+            </Text>
+            {activeTab === 'hidden' && <View style={styles.tabIndicator} />}
+          </Pressable>
+        </View>
+
+        {/* Scanning Complete Banner */}
+        {tabPhotoIds.length > 0 && (
+          <Animated.View
+            entering={FadeInUp.delay(200).duration(400)}
+            style={styles.scanComplete}
+          >
+            <LinearGradient
+              colors={['rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0.05)']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.scanCompleteGradient}
+            >
             <Ionicons name="sparkles" size={16} color={Colors.success} />
             <Text style={styles.scanText}>
-              {selectedIds.length} of {photos.length} selected
+              {activeTab === 'included' ? 'Recommended' : 'Hidden'}: {selectedInTab} of {tabPhotoIds.length} selected
             </Text>
           </LinearGradient>
         </Animated.View>
+      )}
+
+        {/* Hidden info */}
+        {activeTab === 'hidden' && (
+          <View style={styles.hiddenInfo}>
+            <View style={styles.hiddenHeader}>
+              <Text style={styles.hiddenTitle}>Hidden by default</Text>
+              {hiddenPhotos.length > 0 && (
+                <Pressable
+                  onPress={handleToggleSelectAll}
+                  style={styles.includeAllButton}
+                >
+                  <Text style={styles.includeAllText}>
+                    {allSelectedInTab ? 'Remove All' : 'Include All'}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+            <Text style={styles.hiddenSubtitle}>
+              Screenshots and downloads are tucked away. Tap any photo to include it.
+            </Text>
+          </View>
+        )}
 
         {/* Photo Grid */}
         <View style={styles.gridContainer}>
-          <PhotoGrid
-            photos={photos}
-            selectable
-            selectedIds={selectedIds}
-            onSelectionChange={handleSelectionChange}
-            showOwnerAvatar={false}
-          />
+          {gridPhotos.length === 0 ? (
+            <View style={styles.tabEmptyState}>
+              <Ionicons name="image-outline" size={40} color={Colors.textMuted} />
+              <Text style={styles.tabEmptyTitle}>
+                {activeTab === 'included' ? 'No recommended photos' : 'No hidden photos'}
+              </Text>
+              <Text style={styles.tabEmptySubtitle}>
+                {activeTab === 'included'
+                  ? 'Try checking Hidden for screenshots or downloads.'
+                  : 'Everything looks good in your camera roll.'}
+              </Text>
+              {activeTab === 'included' && hiddenPhotos.length > 0 && (
+                <Pressable
+                  style={styles.tabEmptyAction}
+                  onPress={() => setActiveTab('hidden')}
+                >
+                  <Text style={styles.tabEmptyActionText}>View Hidden Photos</Text>
+                </Pressable>
+              )}
+            </View>
+          ) : (
+            <PhotoGrid
+              photos={gridPhotos}
+              selectable
+              selectedIds={selectedIds}
+              onSelectionChange={handleSelectionChange}
+              showOwnerAvatar={false}
+            />
+          )}
         </View>
 
         {/* Floating Add Button */}
@@ -708,6 +795,38 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // Tabs
+  tabSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.sm,
+    gap: Spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  tabItem: {
+    paddingVertical: Spacing.sm,
+    position: 'relative',
+  },
+  tabText: {
+    color: Colors.textMuted,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '600',
+  },
+  tabTextActive: {
+    color: Colors.textPrimary,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.full,
+  },
+
   // Scan complete banner
   scanComplete: {
     marginHorizontal: Spacing.lg,
@@ -731,6 +850,78 @@ const styles = StyleSheet.create({
   // Grid
   gridContainer: {
     flex: 1,
+  },
+  tabEmptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xxl,
+  },
+  tabEmptyTitle: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.lg,
+    fontWeight: '600',
+    marginTop: Spacing.md,
+  },
+  tabEmptySubtitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
+    textAlign: 'center',
+    lineHeight: Typography.sizes.sm * 1.5,
+    marginTop: Spacing.sm,
+    maxWidth: 260,
+  },
+  tabEmptyAction: {
+    marginTop: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.glass,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+  },
+  tabEmptyActionText: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '600',
+  },
+
+  // Hidden info
+  hiddenInfo: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  hiddenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  hiddenTitle: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.md,
+    fontWeight: '600',
+  },
+  hiddenSubtitle: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
+    marginTop: Spacing.xs,
+    lineHeight: Typography.sizes.sm * 1.4,
+  },
+  includeAllButton: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    backgroundColor: Colors.glass,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+  },
+  includeAllText: {
+    color: Colors.accent,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '600',
   },
 
   // Floating button
