@@ -58,10 +58,15 @@ export default function ScanScreen() {
 
   const isValidWorldingInvite = (data: string): boolean => {
     // Accept various formats:
-    // - https://worlding.app/invite/CODE
-    // - worlding://invite/CODE
+    // - https://worlding.app/invite/CODE or https://worlding.app/join/CODE
+    // - worlding://invite/CODE or worlding://join/CODE
     // - Just a code (alphanumeric, 6-20 chars)
-    if (data.includes('worlding.app/invite/') || data.includes('worlding://invite/')) {
+    if (
+      data.includes('worlding.app/invite/') ||
+      data.includes('worlding://invite/') ||
+      data.includes('worlding.app/join/') ||
+      data.includes('worlding://join/')
+    ) {
       return true;
     }
     // Simple code format
@@ -72,8 +77,8 @@ export default function ScanScreen() {
   };
 
   const extractInviteCode = (data: string): string => {
-    // Extract code from URL
-    const urlMatch = data.match(/invite\/([A-Za-z0-9]+)/);
+    // Extract code from URL (supports both /invite/ and /join/ patterns)
+    const urlMatch = data.match(/(?:invite|join)\/([A-Za-z0-9]+)/);
     if (urlMatch) {
       return urlMatch[1];
     }

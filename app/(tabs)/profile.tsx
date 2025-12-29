@@ -17,7 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LegalModal, SettingsRow, SettingsSection, SignOutSheet, StorageUsage } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
-import { getMyWorlds } from '@/lib/api';
+import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
+import { getMyWorlds, syncStorageIfStale } from '@/lib/api';
 import { getStorageInfo } from '@/lib/database.types';
 import type { StorageInfo } from '@/lib/database.types';
 
@@ -39,7 +40,8 @@ const SUBSCRIPTION_STATUS = IS_PREMIUM ? 'Worlding+' : 'Free';
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { signOut, user, profile, profileLoading } = useAuth();
+  const { signOut, user, profile, profileLoading, refreshProfile } = useAuth();
+  const { prefs: notificationPrefs } = useNotificationPrefs();
 
   const [showSignOutSheet, setShowSignOutSheet] = useState(false);
   const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
@@ -52,8 +54,9 @@ export default function ProfileScreen() {
   const avatarUrl = profile?.avatar_url ?? null;
   const userEmail = user?.email ?? '';
   const storageInfo: StorageInfo | null = profile ? getStorageInfo(profile) : null;
+  const notificationsEnabled = notificationPrefs.pushEnabled;
 
-  // Fetch stats when screen comes into focus
+  // Fetch stats and sync storage when screen comes into focus
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -71,12 +74,19 @@ export default function ProfileScreen() {
         }
       }
 
+      async function syncStorage() {
+        // Sync storage with actual bucket usage (only if stale), then refresh profile
+        await syncStorageIfStale();
+        await refreshProfile();
+      }
+
       loadStats();
+      syncStorage();
 
       return () => {
         isMounted = false;
       };
-    }, [])
+    }, [refreshProfile])
   );
 
   // Simple skeleton box component
@@ -187,6 +197,7 @@ export default function ProfileScreen() {
             <SettingsRow
               icon="notifications-outline"
               label="Notifications"
+              value={notificationsEnabled ? 'On' : 'Off'}
               onPress={() => router.push('/settings/notifications')}
             />
             <SettingsRow

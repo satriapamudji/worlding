@@ -6,6 +6,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
 import { Colors } from '@/constants/theme';
@@ -58,8 +59,9 @@ export default function RootLayout() {
 function RootLayoutNav() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthProvider>
-        <ThemeProvider value={WorldingDarkTheme}>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <ThemeProvider value={WorldingDarkTheme}>
           <StatusBar style="light" />
           <Stack
         screenOptions={{
@@ -142,6 +144,15 @@ function RootLayoutNav() {
           }}
         />
         <Stack.Screen
+          name="join"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_bottom',
+            presentation: 'modal',
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
           name="profile-setup"
           options={{
             headerShown: false,
@@ -162,8 +173,9 @@ function RootLayoutNav() {
           }}
         />
         </Stack>
-        </ThemeProvider>
-      </AuthProvider>
+          </ThemeProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

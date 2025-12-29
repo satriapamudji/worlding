@@ -81,10 +81,10 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   blur: {
-    flex: 1,
+    // Removed flex: 1 - let content determine size naturally
   },
   content: {
-    flex: 1,
+    // Removed flex: 1 - prevents collapse when parent has no explicit height
     padding: Spacing.lg,
     borderWidth: 1,
     borderRadius: Radius.xl,

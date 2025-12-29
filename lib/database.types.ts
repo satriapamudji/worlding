@@ -84,6 +84,8 @@ export interface Media {
   type: MediaType;
   storage_path: string;
   thumbnail_path: string | null;
+  preview_path: string | null;
+  preview_size: number;
   width: number | null;
   height: number | null;
   file_size: number;
@@ -132,6 +134,8 @@ export interface MediaInsert {
   type: MediaType;
   storage_path: string;
   thumbnail_path?: string | null;
+  preview_path?: string | null;
+  preview_size?: number;
   width?: number | null;
   height?: number | null;
   file_size: number;

@@ -1,9 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
+import * as Linking from 'expo-linking';
 import { useFocusEffect, useRouter } from 'expo-router';
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  type AlertButton,
   Dimensions,
   Pressable,
   ScrollView,
@@ -19,40 +23,40 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withSpring,
+  withTiming,
+  withRepeat,
+  interpolateColor,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
-import { GlassCard, WorldCard } from '@/components';
+import { Button, GlassCard, WorldCard } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
+import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
 import { getMyWorlds } from '@/lib/api/worlds';
 import type { WorldWithDetails } from '@/lib/database.types';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+import { requestPushPermission } from '@/lib/notifications';
 
 /**
- * Home Screen - Your Worlds
+ * Home Screen - Cinematic Personal Gallery
  *
- * Design Principles:
- * - Content-first: Worlds are the heroes
- * - Minimal chrome: Clean header, no redundant elements
- * - Breathing room: Generous spacing
- * - Delightful micro-interactions
+ * Design Upgrade:
+ * - "Ambient Light" header background
+ * - Editorial Typography (Large Greetings)
+ * - Glassmorphic Action Pills
+ * - Minimalist Text Tabs
  */
 
 function getTimeBasedGreeting(): string {
   const hour = new Date().getHours();
-  if (hour < 5) return 'Night owl';
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  if (hour < 21) return 'Good evening';
-  return 'Night owl';
+  if (hour < 5) return 'Late Night';
+  if (hour < 12) return 'Good Morning';
+  if (hour < 17) return 'Good Afternoon';
+  if (hour < 21) return 'Good Evening';
+  return 'Good Night';
 }
 
-/**
- * Format a date range string from ISO date strings
- */
 function formatDateRange(startDate: string, endDate: string): string {
   const start = new Date(startDate);
   const end = new Date(endDate);
@@ -68,9 +72,6 @@ function formatDateRange(startDate: string, endDate: string): string {
   return `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
 }
 
-/**
- * Transform Supabase world data to WorldCard format
- */
 function transformWorldForCard(world: WorldWithDetails) {
   return {
     id: world.id,
@@ -91,14 +92,30 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { profile } = useAuth();
+  const { prefs: notificationPrefs, loading: notificationLoading, updatePrefs: updateNotificationPrefs } = useNotificationPrefs();
   
   const [worlds, setWorlds] = useState<WorldWithDetails[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'archived'>('active');
+  const [isRequestingNotifications, setIsRequestingNotifications] = useState(false);
+  
+  // Animation values
   const createButtonScale = useSharedValue(1);
+  const glowOpacity = useSharedValue(0.3);
 
-  // Fetch worlds on mount and when screen comes into focus
+  useEffect(() => {
+    glowOpacity.value = withRepeat(
+      withTiming(0.6, { duration: 3000 }),
+      -1,
+      true
+    );
+  }, []);
+
+  const glowStyle = useAnimatedStyle(() => ({
+    opacity: glowOpacity.value,
+  }));
+
   const fetchWorlds = useCallback(async () => {
     const { data, error } = await getMyWorlds();
     if (error) {
@@ -117,32 +134,23 @@ export default function HomeScreen() {
   );
 
   const handleWorldPress = (worldId: string) => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/world/${worldId}`);
   };
 
   const handleWorldLongPress = (worldId: string) => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-    // TODO: Replace with action sheet (Pin, Rename, Share, etc.)
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     console.log('Long-pressed world:', worldId);
   };
 
   const handleCreatePress = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push('/(tabs)/create');
   };
 
-  const handleScanPress = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    router.push('/scan');
+  const handleJoinPress = () => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push('/join');
   };
 
   const handleCreatePressIn = () => {
@@ -158,55 +166,92 @@ export default function HomeScreen() {
   }));
 
   const handleRefresh = useCallback(() => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setIsRefreshing(true);
     fetchWorlds();
   }, [fetchWorlds]);
 
   const firstName = profile?.name?.split(' ')[0] || 'there';
+  const showNotificationPrompt = !notificationLoading
+    && !notificationPrefs.prompted
+    && !notificationPrefs.pushEnabled;
 
-  const summaryLine = useMemo(() => {
-    if (!worlds.length) return '';
-    const worldCount = worlds.length;
-    const photoCount = worlds.reduce((acc, w) => acc + (w.media_count || 0), 0);
-    const worldLabel = worldCount === 1 ? 'World' : 'Worlds';
-    const memoryLabel = photoCount === 1 ? 'memory' : 'memories';
-    return `${worldCount} ${worldLabel} • ${photoCount} ${memoryLabel}`;
-  }, [worlds]);
+  const handleEnableNotifications = () => {
+    if (isRequestingNotifications) return;
+    setIsRequestingNotifications(true);
+    updateNotificationPrefs({ prompted: true });
 
-  // Split worlds into active/building vs archived
+    requestPushPermission()
+      .then((permission) => {
+        if (permission.granted) {
+          updateNotificationPrefs({ pushEnabled: true });
+        } else {
+          updateNotificationPrefs({ pushEnabled: false });
+          if (!permission.canAskAgain) {
+            const actions: AlertButton[] = [{ text: 'Not now', style: 'cancel' }];
+            if (Platform.OS !== 'web') {
+              actions.push({ text: 'Open Settings', onPress: () => Linking.openSettings() });
+            }
+            Alert.alert(
+              'Enable Notifications',
+              'Notifications are disabled at the system level. You can enable them in Settings.',
+              actions
+            );
+          }
+        }
+      })
+      .finally(() => {
+        setIsRequestingNotifications(false);
+      });
+  };
+
+  const handleDismissNotifications = () => {
+    updateNotificationPrefs({ prompted: true });
+  };
+
+  // Derived state
   const { activeWorlds, archivedWorlds } = useMemo(() => {
     const active = worlds.filter(w => w.state === 'active' || w.state === 'building');
     const archived = worlds.filter(w => w.state === 'archived');
     return { activeWorlds: active, archivedWorlds: archived };
   }, [worlds]);
 
-  // Get displayed worlds based on active tab
   const displayedWorlds = activeTab === 'active' ? activeWorlds : archivedWorlds;
 
   const handleTabPress = (tab: 'active' | 'archived') => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    if (Platform.OS !== 'web') Haptics.selectionAsync();
     setActiveTab(tab);
   };
 
-  // Loading state
   if (isLoading) {
     return (
-      <View style={[styles.container, styles.loadingContainer, { paddingTop: insets.top }]}>
+      <View style={[styles.container, styles.loadingContainer]}>
         <ActivityIndicator size="large" color={Colors.accent} />
       </View>
     );
   }
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
+      {/* Cinematic Ambient Background */}
+      <Animated.View style={[styles.ambientGlowContainer, glowStyle]}>
+        <LinearGradient
+          colors={[Colors.accent, 'transparent']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.ambientGlowTopLeft}
+        />
+        <LinearGradient
+          colors={['#4F46E5', 'transparent']} // Indigo secondary glow for depth
+          start={{ x: 1, y: 1 }}
+          end={{ x: 0, y: 0 }}
+          style={styles.ambientGlowBottomRight}
+        />
+      </Animated.View>
+
       <ScrollView 
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + Spacing.md }]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -217,181 +262,203 @@ export default function HomeScreen() {
           />
         }
       >
-        {/* Header - Minimal & Personal */}
-        <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-          {/* Top Row: Avatar + Greeting + Scan */}
-          <View style={styles.topRow}>
-            <Pressable style={styles.avatarButton}>
+        {/* Cinematic Header */}
+        <Animated.View entering={FadeIn.duration(800)} style={styles.header}>
+          <View style={styles.headerTop}>
+            {/* Avatar - Minimal Glass */}
+            <Pressable onPress={() => router.push('/(tabs)/profile')} style={styles.avatarButton}>
               {profile?.avatar_url ? (
                 <Animated.Image
                   source={{ uri: profile.avatar_url }}
                   style={styles.avatar}
                 />
               ) : (
-                <LinearGradient
-                  colors={[Colors.accent, Colors.accentDark]}
-                  style={styles.avatar}
-                >
+                <View style={styles.avatarPlaceholder}>
                   <Text style={styles.avatarText}>
                     {firstName.slice(0, 1).toUpperCase()}
                   </Text>
-                </LinearGradient>
+                </View>
               )}
             </Pressable>
-            <View style={styles.greetingContainer}>
-              <Text style={styles.greeting}>
-                {getTimeBasedGreeting()}, {firstName}
-              </Text>
-              {!!summaryLine && (
-                <Text style={styles.greetingMeta}>{summaryLine}</Text>
-              )}
-            </View>
-            <Pressable style={styles.scanButton} onPress={handleScanPress}>
-              <View style={styles.scanIconContainer}>
-                {/* QR Viewfinder icon - 4 corner brackets */}
-                <View style={[styles.scanCorner, styles.scanCornerTL]} />
-                <View style={[styles.scanCorner, styles.scanCornerTR]} />
-                <View style={[styles.scanCorner, styles.scanCornerBL]} />
-                <View style={[styles.scanCorner, styles.scanCornerBR]} />
-              </View>
-            </Pressable>
-          </View>
-        </Animated.View>
+            
+            {/* Action Pills - Unified Glass Toolbar */}
+            <View style={styles.headerActions}>
+               {/* Join World Action */}
+              <Pressable
+                onPress={handleJoinPress}
+                style={({ pressed }) => [
+                  styles.glassAction,
+                  pressed && styles.actionPressed,
+                ]}
+              >
+                {Platform.OS !== 'web' ? (
+                  <BlurView intensity={25} tint="dark" style={styles.glassActionInner}>
+                    <Ionicons name="scan-outline" size={16} color={Colors.textPrimary} />
+                    <Text style={styles.glassActionText}>Join World</Text>
+                  </BlurView>
+                ) : (
+                  <View style={[styles.glassActionInner, { backgroundColor: 'rgba(255,255,255,0.08)' }]}>
+                    <Ionicons name="scan-outline" size={16} color={Colors.textPrimary} />
+                    <Text style={styles.glassActionText}>Join World</Text>
+                  </View>
+                )}
+              </Pressable>
 
-        {/* Worlds List */}
-        {worlds.length > 0 ? (
-          <View style={styles.worldsSection}>
-            {/* Tab Row */}
-            <View style={styles.tabRow}>
+              {/* Create Action - Primary */}
               <Pressable
                 onPress={handleCreatePress}
                 onPressIn={handleCreatePressIn}
                 onPressOut={handleCreatePressOut}
               >
-                <Animated.View style={[styles.newWorldChip, createButtonStyle]}>
-                  <Ionicons name="add" size={18} color={Colors.textPrimary} />
-                  <Text style={styles.newWorldText}>New</Text>
+                <Animated.View style={[styles.createAction, createButtonStyle]}>
+                  <LinearGradient
+                    colors={[Colors.accent, Colors.accentDark]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.createActionGradient}
+                  >
+                    <Ionicons name="add" size={18} color={Colors.textPrimary} />
+                    <Text style={styles.createActionText}>Create</Text>
+                  </LinearGradient>
                 </Animated.View>
               </Pressable>
-
-              {/* Spacer to push tabs to the right */}
-              <View style={styles.tabSpacer} />
-
-              <Pressable
-                style={[
-                  styles.tabChip,
-                  activeTab === 'active' && styles.tabChipActive,
-                ]}
-                onPress={() => handleTabPress('active')}
-              >
-                <Text style={[
-                  styles.tabChipText,
-                  activeTab === 'active' && styles.tabChipTextActive,
-                ]}>
-                  Happening Now
-                </Text>
-              </Pressable>
-
-              <Pressable
-                style={[
-                  styles.tabChip,
-                  activeTab === 'archived' && styles.tabChipActive,
-                ]}
-                onPress={() => handleTabPress('archived')}
-              >
-                <Text style={[
-                  styles.tabChipText,
-                  activeTab === 'archived' && styles.tabChipTextActive,
-                ]}>
-                  Memories
-                </Text>
-              </Pressable>
             </View>
+          </View>
 
-            {/* Filtered Worlds List */}
-            {displayedWorlds.length > 0 ? (
-              <View style={styles.worldsList}>
-                {displayedWorlds.map((world, index) => {
-                  const cardData = transformWorldForCard(world);
-                  return (
-                    <WorldCard
-                      key={world.id}
-                      id={cardData.id}
-                      title={cardData.title}
-                      coverUri={cardData.coverUri}
-                      dateRange={cardData.dateRange}
-                      photoCount={cardData.photoCount}
-                      members={cardData.members}
-                      state={cardData.state}
-                      index={index}
-                      onPress={handleWorldPress}
-                      onLongPress={handleWorldLongPress}
-                    />
-                  );
-                })}
+          {/* Editorial Greeting - Refined Typography */}
+          <View style={styles.greetingSection}>
+            <Text style={styles.greetingLabel}>{getTimeBasedGreeting()}</Text>
+            <Text style={styles.greetingName} numberOfLines={1} adjustsFontSizeToFit>
+              {firstName}
+            </Text>
+          </View>
+        </Animated.View>
+
+        {showNotificationPrompt && (
+          <Animated.View entering={FadeInUp.delay(120).duration(400)} style={styles.notificationsPrompt}>
+            <GlassCard variant="elevated">
+              <View style={styles.promptContent}>
+                <Text style={styles.promptTitle}>Stay in the loop</Text>
+                <Text style={styles.promptSubtitle}>
+                  Get a nudge when friends add photos or invite you to a World.
+                </Text>
+                <View style={styles.promptActions}>
+                  <Button
+                    title="Enable"
+                    size="small"
+                    onPress={handleEnableNotifications}
+                    loading={isRequestingNotifications}
+                    disabled={isRequestingNotifications}
+                  />
+                  <Pressable onPress={handleDismissNotifications} style={styles.promptDismiss}>
+                    <Text style={styles.promptDismissText}>Not now</Text>
+                  </Pressable>
+                </View>
               </View>
+            </GlassCard>
+          </Animated.View>
+        )}
+
+        {/* Minimalist Tabs */}
+        {worlds.length > 0 && (
+          <View style={styles.tabSection}>
+            <Pressable 
+              onPress={() => handleTabPress('active')}
+              style={styles.tabItem}
+            >
+              <Text style={[
+                styles.tabText, 
+                activeTab === 'active' && styles.tabTextActive
+              ]}>
+                HAPPENING NOW
+              </Text>
+              {activeTab === 'active' && (
+                <Animated.View entering={FadeIn} style={styles.tabIndicator} />
+              )}
+            </Pressable>
+
+            <Pressable 
+              onPress={() => handleTabPress('archived')}
+              style={styles.tabItem}
+            >
+              <Text style={[
+                styles.tabText, 
+                activeTab === 'archived' && styles.tabTextActive
+              ]}>
+                MEMORIES
+              </Text>
+              {activeTab === 'archived' && (
+                <Animated.View entering={FadeIn} style={styles.tabIndicator} />
+              )}
+            </Pressable>
+          </View>
+        )}
+
+        {/* Content Area */}
+        {worlds.length > 0 ? (
+          <View style={styles.worldsList}>
+            {displayedWorlds.length > 0 ? (
+              displayedWorlds.map((world, index) => {
+                const cardData = transformWorldForCard(world);
+                return (
+                  <WorldCard
+                    key={world.id}
+                    id={cardData.id}
+                    title={cardData.title}
+                    coverUri={cardData.coverUri}
+                    dateRange={cardData.dateRange}
+                    photoCount={cardData.photoCount}
+                    members={cardData.members}
+                    state={cardData.state}
+                    index={index}
+                    onPress={handleWorldPress}
+                    onLongPress={handleWorldLongPress}
+                  />
+                );
+              })
             ) : (
               <View style={styles.emptyTabState}>
+                <Ionicons name={activeTab === 'active' ? 'planet-outline' : 'images-outline'} size={48} color={Colors.textMuted} style={{ opacity: 0.5 }} />
                 <Text style={styles.emptyTabText}>
                   {activeTab === 'active' 
-                    ? 'No active worlds right now' 
-                    : 'No memories yet'}
+                    ? 'No worlds active right now' 
+                    : 'No memories archived yet'}
                 </Text>
               </View>
             )}
           </View>
         ) : (
-          /* Empty State - Story-driven */
+          /* Empty State - Refined */
           <Animated.View entering={FadeInUp.delay(200)} style={styles.emptyState}>
-            {/* Hero visual */}
-            <View style={styles.emptyVisual}>
-              <View style={styles.emptyPhotoStack}>
-                <View style={[styles.emptyPhoto, styles.emptyPhoto3]} />
-                <View style={[styles.emptyPhoto, styles.emptyPhoto2]} />
-                <View style={[styles.emptyPhoto, styles.emptyPhoto1]}>
-                  <Ionicons name="add" size={32} color={Colors.textMuted} />
-                </View>
+            <View style={styles.emptyPhotoStack}>
+              <View style={[styles.emptyPhoto, styles.emptyPhoto3]} />
+              <View style={[styles.emptyPhoto, styles.emptyPhoto2]} />
+              <View style={[styles.emptyPhoto, styles.emptyPhoto1]}>
+                <Ionicons name="camera-outline" size={32} color={Colors.textMuted} />
               </View>
             </View>
+            
+            <Text style={styles.emptyTitle}>Your Gallery Awaits</Text>
+            <Text style={styles.emptySubtitle}>
+              Create a world to collect everyone's photos from your next event.
+            </Text>
 
-            {/* Primary CTA - Most prominent */}
-            <View style={styles.emptyCta}>
-              <Pressable
+             <Pressable
                 onPress={handleCreatePress}
                 onPressIn={handleCreatePressIn}
                 onPressOut={handleCreatePressOut}
+                style={{ marginTop: Spacing.xl }}
               >
                 <Animated.View style={createButtonStyle}>
                   <LinearGradient
                     colors={[Colors.accent, Colors.accentDark]}
-                    style={styles.createButtonGradient}
+                    style={styles.createButtonLarge}
                   >
                     <Ionicons name="add" size={20} color={Colors.textPrimary} />
-                    <Text style={styles.createButtonText}>Create Your First World</Text>
+                    <Text style={styles.createButtonTextLarge}>Start First World</Text>
                   </LinearGradient>
                 </Animated.View>
               </Pressable>
-            </View>
-
-            {/* Supporting copy - Secondary */}
-            <View style={styles.emptyContent}>
-              <Text style={styles.emptySubtitle}>
-                Bring everyone's photos together after trips, parties, and nights out.
-              </Text>
-            </View>
-
-            {/* Value props */}
-            <View style={styles.valueProps}>
-              <View style={styles.valueProp}>
-                <Ionicons name="sparkles" size={14} color={Colors.textMuted} />
-                <Text style={styles.valuePropText}>Auto-collects photos</Text>
-              </View>
-              <View style={styles.valuePropDot} />
-              <View style={styles.valueProp}>
-                <Ionicons name="people-outline" size={14} color={Colors.textMuted} />
-                <Text style={styles.valuePropText}>Everyone's photos</Text>
-              </View>
-            </View>
           </Animated.View>
         )}
       </ScrollView>
@@ -407,7 +474,36 @@ const styles = StyleSheet.create({
   loadingContainer: {
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: Colors.background,
   },
+  
+  // Ambient Glow
+  ambientGlowContainer: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+    pointerEvents: 'none',
+  },
+  ambientGlowTopLeft: {
+    position: 'absolute',
+    top: -100,
+    left: -100,
+    width: 600,
+    height: 500,
+    borderRadius: 300,
+    opacity: 0.12,
+    transform: [{ scaleX: 1.5 }],
+  },
+  ambientGlowBottomRight: {
+    position: 'absolute',
+    bottom: -100,
+    right: -100,
+    width: 500,
+    height: 500,
+    borderRadius: 300,
+    opacity: 0.08,
+    transform: [{ scaleX: 1.2 }],
+  },
+
   scrollView: {
     flex: 1,
   },
@@ -415,175 +511,189 @@ const styles = StyleSheet.create({
     paddingBottom: 120,
   },
 
-  // Header - Personal & Welcoming
+  // Header
   header: {
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.md,
+    marginBottom: Spacing.xl,
   },
-  topRow: {
+  headerTop: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: Spacing.md,
+    marginBottom: Spacing.xl,
   },
   avatarButton: {
     ...Shadows.sm,
   },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  avatarPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
   avatarText: {
     color: Colors.textPrimary,
-    fontSize: Typography.sizes.lg,
-    fontWeight: '600',
-  },
-  greetingContainer: {
-    flex: 1,
-  },
-  greeting: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.xl,
-    fontWeight: '600',
-    letterSpacing: -0.3,
-  },
-  greetingMeta: {
-    marginTop: 2,
-    color: Colors.textMuted,
     fontSize: Typography.sizes.sm,
+    fontWeight: '600',
   },
 
-  // Scan Button
-  scanButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.glass,
-    borderWidth: 1,
-    borderColor: Colors.glassBorder,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scanIconContainer: {
-    width: 20,
-    height: 20,
-    position: 'relative',
-  },
-  scanCorner: {
-    position: 'absolute',
-    width: 6,
-    height: 6,
-    borderColor: Colors.textPrimary,
-  },
-  scanCornerTL: {
-    top: 0,
-    left: 0,
-    borderTopWidth: 2,
-    borderLeftWidth: 2,
-    borderTopLeftRadius: 2,
-  },
-  scanCornerTR: {
-    top: 0,
-    right: 0,
-    borderTopWidth: 2,
-    borderRightWidth: 2,
-    borderTopRightRadius: 2,
-  },
-  scanCornerBL: {
-    bottom: 0,
-    left: 0,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
-    borderBottomLeftRadius: 2,
-  },
-  scanCornerBR: {
-    bottom: 0,
-    right: 0,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
-    borderBottomRightRadius: 2,
-  },
-
-  // Worlds List
-  worldsSection: {
-    paddingTop: Spacing.lg,
-  },
-  tabRow: {
+  // Header Actions
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.lg,
     gap: Spacing.sm,
   },
-  tabSpacer: {
-    flex: 1,
-  },
-  tabChip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+  glassAction: {
     borderRadius: Radius.full,
-    backgroundColor: Colors.glass,
+    overflow: 'hidden',
     borderWidth: 1,
-    borderColor: Colors.glassBorder,
+    borderColor: 'rgba(255,255,255,0.08)',
   },
-  tabChipActive: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
-  },
-  tabChipText: {
-    color: Colors.textMuted,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '600',
-  },
-  tabChipTextActive: {
-    color: Colors.textPrimary,
-  },
-  worldsHeaderRow: {
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.lg,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  worldsTitle: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.lg,
-    fontWeight: '700',
-    letterSpacing: -0.2,
-  },
-  newWorldChip: {
+  glassActionInner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  newWorldPlus: {
+  glassActionText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.2,
+  },
+  createAction: {
+    borderRadius: Radius.full,
+    ...Shadows.glowSubtle,
+  },
+  createActionGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 9, 
+    borderRadius: Radius.full,
+  },
+  createActionText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  actionPressed: {
+    opacity: 0.8,
+  },
+
+  // Greeting - Editorial Style
+  greetingSection: {
+    marginTop: Spacing.xs,
+  },
+  greetingLabel: {
+    color: Colors.accent,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 1.5,
+    opacity: 0.9,
+  },
+  greetingName: {
+    color: Colors.textPrimary,
+    fontSize: 38,
+    fontWeight: '300', // Lighter weight for elegance
+    letterSpacing: -1.5,
+    lineHeight: 44,
+  },
+
+  // Notifications Prompt
+  notificationsPrompt: {
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.lg,
+  },
+  promptContent: {
+    gap: Spacing.sm,
+  },
+  promptTitle: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.md,
     fontWeight: '600',
-    marginTop: -1,
   },
-  newWorldText: {
-    color: Colors.textPrimary,
+  promptSubtitle: {
+    color: Colors.textSecondary,
     fontSize: Typography.sizes.sm,
-    fontWeight: '600',
+    lineHeight: Typography.sizes.sm * 1.5,
   },
+  promptActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  promptDismiss: {
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+  },
+  promptDismissText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '500',
+  },
+
+  // Tabs
+  tabSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.xl,
+    gap: Spacing.xl,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  tabItem: {
+    paddingVertical: Spacing.md,
+    position: 'relative',
+  },
+  tabText: {
+    color: Colors.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  tabTextActive: {
+    color: Colors.textPrimary,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: -1,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: Colors.accent,
+    borderRadius: Radius.full,
+  },
+
+  // Lists
   worldsList: {
     paddingHorizontal: Spacing.lg,
-    gap: Spacing.lg,
+    gap: Spacing.xl, // More breathing room between cards
   },
   emptyTabState: {
-    paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.xxl,
     alignItems: 'center',
+    gap: Spacing.md,
   },
   emptyTabText: {
     color: Colors.textMuted,
@@ -593,126 +703,72 @@ const styles = StyleSheet.create({
   // Empty State
   emptyState: {
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xxl,
-    alignItems: 'center',
-  },
-
-  // Empty Visual - Photo Stack
-  emptyVisual: {
-    marginBottom: Spacing.xxl,
+    paddingTop: Spacing.xl,
     alignItems: 'center',
   },
   emptyPhotoStack: {
-    width: 200,
-    height: 160,
+    width: 160,
+    height: 140,
     position: 'relative',
+    marginBottom: Spacing.xl,
   },
   emptyPhoto: {
     position: 'absolute',
-    width: 120,
-    height: 140,
+    width: 100,
+    height: 120,
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: 'rgba(255,255,255,0.08)',
     justifyContent: 'center',
     alignItems: 'center',
     ...Shadows.md,
   },
   emptyPhoto1: {
-    left: 40,
+    left: 30,
     top: 0,
     zIndex: 3,
     backgroundColor: Colors.surfaceElevated,
+    transform: [{ rotate: '-5deg' }],
   },
   emptyPhoto2: {
-    left: 60,
+    left: 45,
     top: 10,
     zIndex: 2,
-    transform: [{ rotate: '8deg' }],
+    transform: [{ rotate: '5deg' }],
   },
   emptyPhoto3: {
-    left: 20,
+    left: 15,
     top: 15,
     zIndex: 1,
-    transform: [{ rotate: '-8deg' }],
-  },
-  emptyPhotoIcon: {
-    fontSize: 32,
-    color: Colors.textMuted,
-  },
-
-  // Empty Content
-  emptyContent: {
-    alignItems: 'center',
-    marginTop: Spacing.lg,
-    marginBottom: Spacing.md,
+    transform: [{ rotate: '-10deg' }],
   },
   emptyTitle: {
     color: Colors.textPrimary,
-    fontSize: Typography.sizes.xxl,
-    fontWeight: 'bold',
-    marginBottom: Spacing.md,
+    fontSize: Typography.sizes.xl,
+    fontWeight: '700',
+    marginBottom: Spacing.sm,
     textAlign: 'center',
   },
   emptySubtitle: {
     color: Colors.textSecondary,
     fontSize: Typography.sizes.md,
     textAlign: 'center',
-    lineHeight: Typography.sizes.md * 1.6,
-    paddingHorizontal: Spacing.lg,
+    lineHeight: 24,
+    maxWidth: 280,
   },
-  emptySubtitleBold: {
-    color: Colors.textPrimary,
-    fontWeight: '600',
-  },
-
-  // Empty CTA
-  emptyCta: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  createButton: {
-    ...Shadows.glowSubtle,
-  },
-  createButtonGradient: {
+  createButtonLarge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.xxl,
     paddingVertical: Spacing.lg,
-    borderRadius: Radius.xl,
+    borderRadius: Radius.full,
+    ...Shadows.glowSubtle,
   },
-  createButtonText: {
+  createButtonTextLarge: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.md,
     fontWeight: '700',
-  },
-
-  // Value Props
-  valueProps: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: Spacing.xl,
-    gap: Spacing.md,
-  },
-  valueProp: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  valuePropIcon: {
-    fontSize: 14,
-  },
-  valuePropText: {
-    color: Colors.textMuted,
-    fontSize: Typography.sizes.sm,
-  },
-  valuePropDot: {
-    width: 3,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: Colors.textMuted,
-    opacity: 0.5,
   },
 });

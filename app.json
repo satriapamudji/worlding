@@ -21,6 +21,9 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "permissions": [
+        "NOTIFICATIONS"
+      ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
@@ -32,7 +35,8 @@
     "plugins": [
       "expo-router",
       "expo-video",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-notifications"
     ],
     "experiments": {
       "typedRoutes": true

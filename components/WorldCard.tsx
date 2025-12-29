@@ -1,4 +1,5 @@
 import { LinearGradient } from 'expo-linear-gradient';
+import { BlurView } from 'expo-blur';
 import React, { useState } from 'react';
 import {
     Dimensions,
@@ -115,52 +116,54 @@ export function WorldCard({
             onLoad={() => setImageLoaded(true)}
           />
 
-          {/* Subtle top highlight for depth */}
+          {/* Cinematic Highlight */}
           <View style={styles.topHighlight} />
 
-          {/* Gradient Overlay - More dramatic */}
+          {/* Easing Gradient - Smooth Readability */}
           <LinearGradient
-            colors={['rgba(0,0,0,0)', 'rgba(0,0,0,0.15)', 'rgba(0,0,0,0.9)']}
-            locations={[0, 0.35, 1]}
+            colors={['transparent', 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0.85)']}
+            locations={[0.4, 0.7, 1]}
             style={styles.gradient}
           />
 
-          {/* Content */}
+          {/* Content Layer (Pinned to Bottom) */}
           <View style={styles.content}>
-            {/* Status Row */}
-            <View style={styles.statusRow}>
-              {/* State Badge */}
-              {state !== 'archived' && (
-                <View style={[
-                  styles.stateBadge,
-                  state === 'building' ? styles.stateBadgeBuilding : styles.stateBadgeActive
-                ]}>
-                  <View style={[
-                    styles.stateDot,
-                    state === 'building' ? styles.stateDotBuilding : styles.stateDotActive
-                  ]} />
-                  <Text style={styles.stateText}>
-                    {state === 'building' ? 'Collecting' : 'Live'}
-                  </Text>
-                </View>
-              )}
-              {/* Date Badge */}
-              <View style={styles.dateBadge}>
-                <Text style={styles.dateText}>{dateRange}</Text>
+            <View style={styles.bottomSection}>
+              <Text style={styles.title} numberOfLines={2}>
+                {title}
+              </Text>
+
+              {/* Glass Footer Meta */}
+              <View style={styles.glassFooter}>
+                 <AvatarStack users={members} size="small" maxDisplay={4} />
+                 <View style={styles.divider} />
+                 <Text style={styles.photoCount}>{photoCount} Photos</Text>
               </View>
-            </View>
 
-            {/* Title */}
-            <Text style={styles.title} numberOfLines={2}>
-              {title}
-            </Text>
-
-            {/* Bottom Row: Avatars · Photo Count */}
-            <View style={styles.bottomRow}>
-              <AvatarStack users={members} size="small" maxDisplay={4} />
-              <View style={styles.metaContainer}>
-                <View style={styles.dot} />
-                <Text style={styles.photoCount}>{photoCount}</Text>
+              {/* Status/Badges Row - Moved to bottom */}
+              <View style={styles.statusRow}>
+                 {state !== 'archived' && (
+                  Platform.OS !== 'web' ? (
+                    <BlurView intensity={20} tint="dark" style={styles.glassBadge}>
+                      <View style={[styles.statusDot, styles.statusDotActive]} />
+                      <Text style={styles.badgeText}>LIVE</Text>
+                    </BlurView>
+                  ) : (
+                    <View style={[styles.glassBadge, { backgroundColor: 'rgba(0,0,0,0.6)' }]}>
+                      <View style={[styles.statusDot, styles.statusDotActive]} />
+                      <Text style={styles.badgeText}>LIVE</Text>
+                    </View>
+                  )
+                )}
+                {Platform.OS !== 'web' ? (
+                  <BlurView intensity={20} tint="dark" style={styles.glassBadge}>
+                    <Text style={styles.badgeText}>{dateRange}</Text>
+                  </BlurView>
+                ) : (
+                  <View style={[styles.glassBadge, { backgroundColor: 'rgba(0,0,0,0.6)' }]}>
+                    <Text style={styles.badgeText}>{dateRange}</Text>
+                  </View>
+                )}
               </View>
             </View>
           </View>
@@ -208,12 +211,65 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.xl,
   },
 
+  // Top Badges
+  // Removed topBadges style
+
+  glassBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.4)', // Fallback for android/no blur
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.textSecondary,
+  },
+  statusDotActive: {
+    backgroundColor: '#10B981',
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  badgeText: {
+    color: Colors.textPrimary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+
+  // Bottom Content
+  bottomSection: {
+    marginTop: 'auto', // Push to bottom
+  },
+  glassFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  divider: {
+    width: 1,
+    height: 12,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+    marginHorizontal: Spacing.md,
+  },
+
   // Status Row
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
-    marginBottom: Spacing.sm,
+    // marginBottom removed as it's now last
   },
 
   // State Badge
@@ -228,20 +284,9 @@ const styles = StyleSheet.create({
   stateBadgeActive: {
     backgroundColor: 'rgba(16, 185, 129, 0.25)',
   },
-  stateBadgeBuilding: {
-    backgroundColor: 'rgba(99, 102, 241, 0.25)',
-  },
-  stateDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-  },
-  stateDotActive: {
-    backgroundColor: '#10B981',
-  },
-  stateDotBuilding: {
-    backgroundColor: '#6366F1',
-  },
+
+  // Removed duplicate stateDot and stateDotActive definitions here
+
   stateText: {
     color: Colors.textPrimary,
     fontSize: 10,
@@ -267,7 +312,7 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: Typography.sizes.xl + 4,
     fontWeight: 'bold',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm, // Reduced bottom margin since badges are below now
     lineHeight: (Typography.sizes.xl + 4) * 1.15,
     letterSpacing: -0.3,
   },

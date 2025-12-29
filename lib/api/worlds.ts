@@ -15,6 +15,8 @@ import type {
   Profile,
   WorldMemberWithProfile,
 } from '@/lib/database.types';
+import { inferContentTypeAndExtension, readFileAsUint8Array } from '@/lib/file-utils';
+import { getCurrentProfile } from './profiles';
 
 /**
  * Get all worlds the current user is a member of
@@ -108,30 +110,32 @@ export async function createWorld(
   coverUri?: string | null
 ): Promise<ApiResponse<World>> {
   const { data: { user } } = await supabase.auth.getUser();
-  
+
   if (!user) {
     return { data: null, error: 'Not authenticated' };
   }
-  
+
   let coverUrl: string | null = null;
-  
+  let coverSize = 0;
+
   // Upload cover image if provided
   if (coverUri) {
-    const fileName = `${Date.now()}.jpg`;
-    const filePath = `${user.id}/${fileName}`;
-    
-    const response = await fetch(coverUri);
-    const blob = await response.blob();
-    
+    const timestamp = Date.now();
+    const fileBody = await readFileAsUint8Array(coverUri);
+    coverSize = fileBody.length;
+    const { contentType, extension } = inferContentTypeAndExtension(coverUri, 'image/jpeg');
+    const filePath = `${user.id}/${timestamp}.${extension}`;
+
     const { error: uploadError } = await supabase.storage
       .from('world-covers')
-      .upload(filePath, blob, {
-        contentType: 'image/jpeg',
+      .upload(filePath, fileBody, {
+        contentType,
         upsert: true,
       });
-    
+
     if (uploadError) {
       console.warn('Failed to upload cover:', uploadError.message);
+      coverSize = 0; // Reset since upload failed
       // Continue without cover - not a fatal error
     } else {
       const { data: urlData } = supabase.storage
@@ -175,7 +179,18 @@ export async function createWorld(
     await supabase.from('worlds').delete().eq('id', world.id);
     return { data: null, error: memberError.message };
   }
-  
+
+  // Update storage used for cover image
+  if (coverSize > 0) {
+    const profileResult = await getCurrentProfile();
+    if (profileResult.data) {
+      await supabase
+        .from('profiles')
+        .update({ storage_used: profileResult.data.storage_used + coverSize })
+        .eq('id', user.id);
+    }
+  }
+
   return { data: world, error: null };
 }
 
@@ -234,41 +249,53 @@ export async function updateWorldCover(
   coverUri: string
 ): Promise<ApiResponse<string>> {
   const { data: { user } } = await supabase.auth.getUser();
-  
+
   if (!user) {
     return { data: null, error: 'Not authenticated' };
   }
-  
-  const fileName = `${Date.now()}.jpg`;
-  const filePath = `${worldId}/${fileName}`;
-  
-  const response = await fetch(coverUri);
-  const blob = await response.blob();
-  
+
+  // Get current profile for storage tracking
+  const profileResult = await getCurrentProfile();
+  if (profileResult.error || !profileResult.data) {
+    return { data: null, error: 'Could not verify storage limit' };
+  }
+
+  const timestamp = Date.now();
+  const fileBody = await readFileAsUint8Array(coverUri);
+  const fileSize = fileBody.length;
+  const { contentType, extension } = inferContentTypeAndExtension(coverUri, 'image/jpeg');
+  const filePath = `${worldId}/${timestamp}.${extension}`;
+
   const { error: uploadError } = await supabase.storage
     .from('world-covers')
-    .upload(filePath, blob, {
-      contentType: 'image/jpeg',
+    .upload(filePath, fileBody, {
+      contentType,
       upsert: true,
     });
-  
+
   if (uploadError) {
     return { data: null, error: uploadError.message };
   }
-  
+
   const { data: urlData } = supabase.storage
     .from('world-covers')
     .getPublicUrl(filePath);
-  
+
   // Update world with new cover URL
   const { error: updateError } = await supabase
     .from('worlds')
     .update({ cover_url: urlData.publicUrl })
     .eq('id', worldId);
-  
+
   if (updateError) {
     return { data: null, error: updateError.message };
   }
-  
+
+  // Update storage used (add new cover size - we don't track old cover for simplicity)
+  await supabase
+    .from('profiles')
+    .update({ storage_used: profileResult.data.storage_used + fileSize })
+    .eq('id', user.id);
+
   return { data: urlData.publicUrl, error: null };
 }

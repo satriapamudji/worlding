@@ -15,11 +15,17 @@ import type { Media, MediaType } from '@/lib/database.types';
 // COMPRESSION CONSTANTS
 // ============================================================================
 
-/** Maximum dimension (width or height) for compressed images */
+/** Maximum dimension (width or height) for primary uploads */
 export const MAX_IMAGE_DIMENSION = 1920;
 
-/** JPEG compression quality (0.0 - 1.0) */
+/** JPEG compression quality (0.0 - 1.0) for primary uploads */
 export const IMAGE_COMPRESSION_QUALITY = 0.8;
+
+/** Maximum dimension for Relive preview images */
+export const RELIVE_PREVIEW_MAX_DIMENSION = 1080;
+
+/** JPEG compression quality for Relive preview images */
+export const RELIVE_PREVIEW_COMPRESSION_QUALITY = 0.7;
 
 // ============================================================================
 // COMPRESSION UTILITIES
@@ -45,7 +51,7 @@ export async function compressImage(
   height: number
 ): Promise<CompressionResult> {
   const actions: Array<{ resize: { width?: number; height?: number } }> = [];
-  
+
   let newWidth = width;
   let newHeight = height;
 
@@ -54,13 +60,45 @@ export async function compressImage(
     const scale = MAX_IMAGE_DIMENSION / Math.max(width, height);
     newWidth = Math.round(width * scale);
     newHeight = Math.round(height * scale);
-    
+
     // Resize maintaining aspect ratio (only specify width, height auto-calculated)
     actions.push({ resize: { width: newWidth } });
   }
 
   const result = await manipulateAsync(uri, actions, {
     compress: IMAGE_COMPRESSION_QUALITY,
+    format: SaveFormat.JPEG,
+  });
+
+  return {
+    uri: result.uri,
+    width: result.width,
+    height: result.height,
+  };
+}
+
+/**
+ * Generate a smaller preview image for Relive playback
+ */
+export async function compressRelivePreview(
+  uri: string,
+  width: number,
+  height: number
+): Promise<CompressionResult> {
+  const actions: Array<{ resize: { width?: number; height?: number } }> = [];
+
+  let newWidth = width;
+  let newHeight = height;
+
+  if (width > RELIVE_PREVIEW_MAX_DIMENSION || height > RELIVE_PREVIEW_MAX_DIMENSION) {
+    const scale = RELIVE_PREVIEW_MAX_DIMENSION / Math.max(width, height);
+    newWidth = Math.round(width * scale);
+    newHeight = Math.round(height * scale);
+    actions.push({ resize: { width: newWidth } });
+  }
+
+  const result = await manipulateAsync(uri, actions, {
+    compress: RELIVE_PREVIEW_COMPRESSION_QUALITY,
     format: SaveFormat.JPEG,
   });
 

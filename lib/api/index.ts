@@ -6,11 +6,16 @@
 
 // Profiles
 export {
+  calculateLiveStorageUsed,
   createProfile,
   getCurrentProfile,
   getProfile,
   getStorageUsage,
+  incrementStorageUsed,
+  isStorageSyncStale,
   profileExists,
+  syncStorageIfStale,
+  syncStorageUsed,
   updateProfile,
   uploadAvatar,
 } from './profiles';

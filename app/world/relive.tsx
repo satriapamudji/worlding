@@ -111,9 +111,9 @@ export default function ReliveScreen() {
 
       setPhotos(imageMedia);
 
-      // Get signed URLs for all photos
-      const storagePaths = imageMedia.map(m => m.storage_path);
-      const urlsResult = await getMediaUrls(storagePaths);
+      // Get signed URLs for all photos (prefer Relive preview when available)
+      const storagePaths = imageMedia.map(m => m.preview_path ?? m.storage_path);
+      const urlsResult = await getMediaUrls(storagePaths, 24 * 60 * 60);
       
       if (urlsResult.data) {
         setPhotoUrls(urlsResult.data);
@@ -290,7 +290,8 @@ export default function ReliveScreen() {
   }
 
   const currentPhoto = photos[currentIndex];
-  const currentPhotoUrl = photoUrls[currentPhoto.storage_path];
+  const activePhotoPath = currentPhoto.preview_path ?? currentPhoto.storage_path;
+  const currentPhotoUrl = photoUrls[activePhotoPath];
   const photoDate = new Date(currentPhoto.taken_at ?? currentPhoto.created_at);
   const dateLabel = photoDate.toLocaleDateString('en-US', {
     weekday: 'long',

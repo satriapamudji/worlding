@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -169,7 +169,7 @@ function createListData(
       id: 'world-action-relive',
       action: 'relive',
     });
-  } else if (state === 'building') {
+  } else {
     items.push({
       type: 'world-action',
       id: 'world-action-complete',
@@ -266,19 +266,38 @@ export default function WorldViewScreen() {
   const completeButtonScale = useSharedValue(1);
 
   // Fetch world data
-  const loadWorldData = useCallback(async () => {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const hasLoadedOnceRef = useRef(false);
+
+  const loadWorldData = useCallback(async (options?: { showLoading?: boolean }) => {
     if (!id) return;
-    
-    setLoading(true);
-    setError(null);
+
+    const showLoading = options?.showLoading ?? false;
+    const isFirstLoad = !hasLoadedOnceRef.current;
+
+    if (showLoading || isFirstLoad) {
+      setLoading(true);
+      setError(null);
+    } else {
+      setIsRefreshing(true);
+    }
 
     try {
       // Fetch world details
       const worldResult = await getWorld(id);
       if (worldResult.error || !worldResult.data) {
+        if (hasLoadedOnceRef.current) {
+          console.warn('Failed to refresh world:', worldResult.error || 'World not found');
+          return;
+        }
+
         setError(worldResult.error || 'World not found');
         setLoading(false);
         return;
+      }
+
+      if (!hasLoadedOnceRef.current) {
+        hasLoadedOnceRef.current = true;
       }
 
       setWorld(worldResult.data);
@@ -311,16 +330,19 @@ export default function WorldViewScreen() {
       }
     } catch (e) {
       console.error('Error loading world:', e);
-      setError('Failed to load world');
+      if (!hasLoadedOnceRef.current) {
+        setError('Failed to load world');
+      }
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, [id]);
 
   // Load data on focus
   useFocusEffect(
     useCallback(() => {
-      loadWorldData();
+      loadWorldData({ showLoading: !hasLoadedOnceRef.current });
     }, [loadWorldData])
   );
 
@@ -334,8 +356,8 @@ export default function WorldViewScreen() {
   // Derived values
   const dateRange = world ? formatDateRange(world.start_date, world.end_date) : '';
   const coverUrl = world?.cover_url || 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba?w=800';
+  const coverSource = useMemo(() => ({ uri: coverUrl }), [coverUrl]);
   const isArchived = world?.state === 'archived';
-  const isBuilding = world?.state === 'building';
   const pendingMembers = members.filter(m => m.syncStatus !== 'synced');
 
   const scrollHandler = useAnimatedScrollHandler({
@@ -373,8 +395,189 @@ export default function WorldViewScreen() {
     ),
   }));
 
-  // Loading state
-  if (loading) {
+  // Button animations
+  const createPressHandlers = (scale: SharedValue<number>) => ({
+    onPressIn: () => {
+      scale.value = withSpring(0.9, { damping: 15, stiffness: 400 });
+    },
+    onPressOut: () => {
+      scale.value = withSpring(1, { damping: 15, stiffness: 400 });
+    },
+  });
+
+  const backButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: backButtonScale.value }],
+  }));
+
+  const shareButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: shareButtonScale.value }],
+  }));
+
+  const fabStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: fabScale.value }],
+  }));
+
+  const reliveButtonAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: reliveButtonScale.value }],
+  }));
+
+  const completeButtonAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: completeButtonScale.value }],
+  }));
+
+  const triggerHaptic = useCallback(
+    (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
+      if (Platform.OS !== 'web') {
+        void Haptics.impactAsync(style);
+      }
+    },
+    []
+  );
+
+  const worldTitle = world?.title ?? '';
+  const headerContentTop = insets.top + NAV_BAR_PADDING + NAV_BUTTON_SIZE + NAV_BAR_PADDING + NAV_BAR_GAP;
+  const headerBottomTop = headerContentTop + headerTopHeight + Spacing.md;
+
+  const handleInvite = useCallback(() => {
+    triggerHaptic();
+    router.push({
+      pathname: '/invite',
+      params: {
+        worldId: id,
+        worldName: worldTitle,
+      },
+    });
+  }, [id, router, triggerHaptic, worldTitle]);
+
+  const headerElement = useMemo(
+    () => (
+      <Animated.View style={[styles.header, headerStyle]}>
+        {/* Cover Image */}
+        <Image
+          source={coverSource}
+          style={styles.coverImage}
+          resizeMode="cover"
+        />
+
+        {/* Gradient Overlay */}
+        <LinearGradient
+          colors={['rgba(5,5,5,0.3)', 'rgba(5,5,5,0)', 'rgba(5,5,5,0.85)', Colors.background]}
+          locations={[0, 0.25, 0.7, 1]}
+          style={styles.gradient}
+        />
+
+        {/* Header Top Content */}
+        <Animated.View
+          style={[styles.headerTopContent, headerContentOpacity, { top: headerContentTop }]}
+          onLayout={(event) => {
+            const nextHeight = Math.round(event.nativeEvent.layout.height);
+            setHeaderTopHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+          }}
+        >
+          {/* Status Badge */}
+          <View style={styles.statusRow}>
+            <View
+              style={[
+                styles.statusBadge,
+                isArchived ? styles.statusBadgeArchived : styles.statusBadgeActive,
+              ]}
+            >
+              <View
+                style={[
+                  styles.statusDot,
+                  isArchived ? styles.statusDotArchived : styles.statusDotActive,
+                ]}
+              />
+              <Text style={styles.statusText}>
+                {isArchived ? 'Complete' : 'Live'}
+              </Text>
+            </View>
+
+            <View style={styles.dateBadge}>
+              <Text style={styles.dateText}>{dateRange}</Text>
+            </View>
+          </View>
+
+          {/* Title */}
+          <Text style={styles.title} numberOfLines={2}>
+            {worldTitle}
+          </Text>
+
+          {/* Members Row */}
+          <View style={styles.membersRow}>
+            <AvatarStack
+              users={members.map(m => ({ id: m.id, name: m.name, avatar: m.avatar ?? undefined }))}
+              size="medium"
+              maxDisplay={5}
+            />
+            {!isArchived && (
+              <Pressable style={styles.inviteButton} onPress={handleInvite}>
+                <Text style={styles.inviteButtonText}>+ Invite</Text>
+              </Pressable>
+            )}
+          </View>
+        </Animated.View>
+
+        {/* Header Bottom Content */}
+        <Animated.View
+          style={[
+            styles.headerBottomContent,
+            headerContentOpacity,
+            { top: headerBottomTop },
+          ]}
+        >
+          <View style={styles.statsRow}>
+            <View style={styles.statsLeft}>
+              <View style={styles.statItem}>
+                <Text style={styles.statValue}>{photos.length}</Text>
+                <Text style={styles.statLabel}>photos</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={styles.statValue}>{members.length}</Text>
+                <Text style={styles.statLabel}>members</Text>
+              </View>
+            </View>
+          </View>
+        </Animated.View>
+      </Animated.View>
+    ),
+    [
+      coverSource,
+      dateRange,
+      handleInvite,
+      headerBottomTop,
+      headerContentOpacity,
+      headerContentTop,
+      headerStyle,
+      isArchived,
+      members,
+      photos.length,
+      worldTitle,
+    ]
+  );
+
+  const refreshRowElement = isRefreshing ? (
+    <View style={styles.refreshRow}>
+      <ActivityIndicator size="small" color={Colors.textSecondary} />
+      <Text style={styles.refreshText}>Refreshing…</Text>
+    </View>
+  ) : null;
+
+  // NOTE: Pass a React element (not an inline component function) so FlatList
+  // doesn't treat the header as a new component type on every render.
+  const listHeaderComponent = useMemo(
+    () => (
+      <>
+        {headerElement}
+        {refreshRowElement}
+      </>
+    ),
+    [headerElement, refreshRowElement]
+  );
+
+  // Loading state (only block the screen on the very first load)
+  if (loading && !world) {
     return (
       <View style={[styles.container, styles.loadingContainer]}>
         <ActivityIndicator size="large" color={Colors.accent} />
@@ -383,8 +586,8 @@ export default function WorldViewScreen() {
     );
   }
 
-  // Error state
-  if (error || !world) {
+  // Error state (only block the screen if we have nothing to show)
+  if ((error && !world) || !world) {
     return (
       <View style={[styles.container, styles.errorContainer]}>
         <Text style={styles.errorText}>{error || 'World not found'}</Text>
@@ -394,12 +597,6 @@ export default function WorldViewScreen() {
       </View>
     );
   }
-
-  const triggerHaptic = (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(style);
-    }
-  };
 
   const handleBack = () => {
     triggerHaptic();
@@ -485,16 +682,7 @@ export default function WorldViewScreen() {
     router.push(`/world/relive?id=${id}`);
   };
 
-  const handleInvite = () => {
-    triggerHaptic();
-    router.push({
-      pathname: '/invite',
-      params: {
-        worldId: id,
-        worldName: world?.title,
-      },
-    });
-  };
+
 
   const handlePhotoPress = (photo: DisplayPhoto) => {
     triggerHaptic();
@@ -516,119 +704,7 @@ export default function WorldViewScreen() {
     console.log('Nudge all pending members:', pendingMembers.map(m => m.name));
   };
 
-  // Button animations
-  const createPressHandlers = (scale: SharedValue<number>) => ({
-    onPressIn: () => {
-      scale.value = withSpring(0.9, { damping: 15, stiffness: 400 });
-    },
-    onPressOut: () => {
-      scale.value = withSpring(1, { damping: 15, stiffness: 400 });
-    },
-  });
 
-  const backButtonStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: backButtonScale.value }],
-  }));
-
-  const shareButtonStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: shareButtonScale.value }],
-  }));
-
-  const fabStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: fabScale.value }],
-  }));
-
-  const reliveButtonAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: reliveButtonScale.value }],
-  }));
-  const completeButtonAnimStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: completeButtonScale.value }],
-  }));
-  const headerContentTop = insets.top + NAV_BAR_PADDING + NAV_BUTTON_SIZE + NAV_BAR_PADDING + NAV_BAR_GAP;
-  const headerBottomTop = headerContentTop + headerTopHeight + Spacing.md;
-
-  // Render Header - Different for archived vs active
-  const renderHeader = () => (
-    <Animated.View style={[styles.header, headerStyle]}>
-      {/* Cover Image */}
-      <Image
-        source={{ uri: coverUrl }}
-        style={styles.coverImage}
-        resizeMode="cover"
-      />
-
-      {/* Gradient Overlay */}
-      <LinearGradient
-        colors={['rgba(5,5,5,0.3)', 'rgba(5,5,5,0)', 'rgba(5,5,5,0.85)', Colors.background]}
-        locations={[0, 0.25, 0.7, 1]}
-        style={styles.gradient}
-      />
-
-      {/* Header Top Content */}
-      <Animated.View
-        style={[styles.headerTopContent, headerContentOpacity, { top: headerContentTop }]}
-        onLayout={(event) => {
-          const nextHeight = Math.round(event.nativeEvent.layout.height);
-          setHeaderTopHeight((prev) => (prev === nextHeight ? prev : nextHeight));
-        }}
-      >
-        {/* Status Badge */}
-        <View style={styles.statusRow}>
-          <View style={[
-            styles.statusBadge,
-            isArchived ? styles.statusBadgeArchived : isBuilding ? styles.statusBadgeBuilding : styles.statusBadgeActive
-          ]}>
-            <View style={[
-              styles.statusDot,
-              isArchived ? styles.statusDotArchived : isBuilding ? styles.statusDotBuilding : styles.statusDotActive
-            ]} />
-            <Text style={styles.statusText}>
-              {isArchived ? 'Complete' : isBuilding ? 'Collecting' : 'Live'}
-            </Text>
-          </View>
-          <View style={styles.dateBadge}>
-            <Text style={styles.dateText}>{dateRange}</Text>
-          </View>
-        </View>
-
-        {/* Title */}
-        <Text style={styles.title} numberOfLines={2}>
-          {world.title}
-        </Text>
-
-        {/* Members Row */}
-        <View style={styles.membersRow}>
-          <AvatarStack
-            users={members.map(m => ({ id: m.id, name: m.name, avatar: m.avatar ?? undefined }))}
-            size="medium"
-            maxDisplay={5}
-          />
-          {!isArchived && (
-            <Pressable style={styles.inviteButton} onPress={handleInvite}>
-              <Text style={styles.inviteButtonText}>+ Invite</Text>
-            </Pressable>
-          )}
-        </View>
-      </Animated.View>
-
-      {/* Header Bottom Content */}
-      <Animated.View style={[styles.headerBottomContent, headerContentOpacity, { top: headerBottomTop }]}>
-        <View style={styles.statsRow}>
-          <View style={styles.statsLeft}>
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{photos.length}</Text>
-              <Text style={styles.statLabel}>photos</Text>
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{members.length}</Text>
-              <Text style={styles.statLabel}>members</Text>
-            </View>
-          </View>
-        </View>
-      </Animated.View>
-    </Animated.View>
-  );
 
   // Render Sync Status Section
   const renderWorldAction = (action: WorldActionSection['action']) => {
@@ -769,13 +845,6 @@ export default function WorldViewScreen() {
               This World was archived without any photos being added.
             </Text>
           </>
-        ) : isBuilding ? (
-          <>
-            <Text style={styles.emptyStateTitle}>Building your World</Text>
-            <Text style={styles.emptyStateSubtitle}>
-              Photos will appear here as members add their memories.
-            </Text>
-          </>
         ) : (
           <>
             <Text style={styles.emptyStateTitle}>Be the first to add photos</Text>
@@ -889,6 +958,7 @@ export default function WorldViewScreen() {
     );
   };
 
+
   return (
     <RequireAuth>
       <View style={styles.container}>
@@ -928,7 +998,7 @@ export default function WorldViewScreen() {
           data={listData}
           renderItem={renderItem}
           keyExtractor={(item) => item.id}
-          ListHeaderComponent={renderHeader}
+          ListHeaderComponent={listHeaderComponent}
           ListEmptyComponent={photos.length === 0 ? renderEmptyState : null}
           showsVerticalScrollIndicator={false}
           onScroll={scrollHandler}
@@ -1019,6 +1089,18 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: Typography.sizes.md,
     marginTop: Spacing.sm,
+  },
+  refreshRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.background,
+  },
+  refreshText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
   },
 
   // Navigation Bar

@@ -1,7 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -11,19 +11,26 @@ import {
   TextInput,
   View,
   Pressable,
+  Image,
+  Dimensions,
 } from 'react-native';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 
 import { CalendarRangeSheet } from '@/components/CalendarRangeSheet';
-import { ImagePicker } from '@/components';
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { Colors, Radius, Spacing, Typography, Shadows, Layout } from '@/constants/theme';
 import { createWorld } from '@/lib/api/worlds';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const COVER_HEIGHT = 280;
 
 /**
  * Create World Screen
  *
- * Minimal, focused design inspired by Linear/Notion
+ * Immersive, "What You See Is What You Get" design.
+ * The user edits the world cover directly.
  */
 export default function CreateScreen() {
   const router = useRouter();
@@ -54,6 +61,31 @@ export default function CreateScreen() {
   };
 
   const isDateRangeValid = startDate <= endDate;
+
+  // --- Image Picker Logic ---
+  const handleCoverPress = async () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') return;
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [16, 9], // Cinematic aspect ratio
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        setCoverUri(result.assets[0].uri);
+      }
+    } catch (e) {
+      console.warn('Error picking image:', e);
+    }
+  };
 
   const handleCreateWorld = async () => {
     const trimmedName = worldName.trim();
@@ -176,69 +208,81 @@ export default function CreateScreen() {
   const ctaLabel = isReviewFlow ? 'Continue' : 'Create World';
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
+      {/* Immersive Scroll View */}
       <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Header */}
-          <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
-            <Text style={styles.title}>New World</Text>
-          </Animated.View>
-
-          {/* Cover Image Picker */}
-          <Animated.View
-            entering={FadeInUp.delay(50).duration(400)}
-            style={styles.coverSection}
-          >
-            <Text style={styles.label}>Cover (optional)</Text>
-            <ImagePicker
-              value={coverUri}
-              onChange={setCoverUri}
-              placeholder="Add cover photo"
-              icon="image-outline"
-              size="large"
-              shape="square"
-              aspect={[16, 9]}
-              disabled={isSubmitting}
+        style={styles.scrollView}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: Layout.tabBarHeight + 100 }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Header / Cover Area */}
+        <Animated.View entering={FadeIn.duration(600)} style={styles.coverContainer}>
+          <Pressable onPress={handleCoverPress} style={styles.coverPressable}>
+            {coverUri ? (
+              <Image source={{ uri: coverUri }} style={styles.coverImage} resizeMode="cover" />
+            ) : (
+              <LinearGradient
+                colors={['#2A2A2A', '#1A1A1A']}
+                style={styles.coverPlaceholder}
+              >
+                <View style={styles.addCoverIcon}>
+                  <Ionicons name="image-outline" size={32} color={Colors.textSecondary} />
+                </View>
+                <Text style={styles.addCoverText}>Add Cover Photo</Text>
+              </LinearGradient>
+            )}
+            
+            {/* Gradient Overlay for Text Readability */}
+            <LinearGradient
+              colors={['transparent', 'rgba(5,5,5,0.8)', Colors.background]}
+              locations={[0, 0.8, 1]}
+              style={styles.gradientOverlay}
             />
-          </Animated.View>
 
-          {/* Name Input */}
-          <Animated.View
-            entering={FadeInUp.delay(100).duration(400)}
-            style={styles.inputSection}
-          >
-            <Text style={styles.label}>Name</Text>
+            {/* Edit Button (if cover exists) */}
+            {coverUri && (
+              <View style={styles.editBadge}>
+                <Ionicons name="pencil" size={14} color={Colors.textPrimary} />
+                <Text style={styles.editBadgeText}>Edit</Text>
+              </View>
+            )}
+          </Pressable>
+        </Animated.View>
+
+        {/* Content Area - Floating up slightly */}
+        <View style={styles.formContent}>
+          
+          {/* World Name Input */}
+          <Animated.View entering={FadeInUp.delay(100).duration(500)} style={styles.titleInputContainer}>
             <TextInput
-              style={styles.input}
-              placeholder="Tokyo 2024, Wedding Weekend..."
+              style={styles.titleInput}
+              placeholder="Name your World..."
               placeholderTextColor={Colors.textMuted}
               value={worldName}
               onChangeText={setWorldName}
               autoCapitalize="words"
-              autoFocus
+              multiline
+              maxLength={50}
               returnKeyType="done"
               editable={!isSubmitting}
             />
           </Animated.View>
 
-          {/* Date Input */}
-          <Animated.View
-            entering={FadeInUp.delay(200).duration(400)}
-            style={styles.inputSection}
-          >
-            <Text style={styles.label}>Dates</Text>
-            <Pressable 
-              style={styles.dateButton} 
+          {/* Date Selector */}
+          <Animated.View entering={FadeInUp.delay(200).duration(500)} style={styles.dateSection}>
+             <Pressable 
+              style={styles.dateRow} 
               onPress={openCalendar}
               disabled={isSubmitting}
             >
-              <Text style={styles.dateText}>{formatDateRange()}</Text>
-              <Text style={styles.dateChevron}>›</Text>
+              <View style={styles.dateIcon}>
+                <Ionicons name="calendar-outline" size={20} color={Colors.accent} />
+              </View>
+              <Text style={styles.dateValue}>{formatDateRange()}</Text>
+              <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} style={{ marginLeft: 'auto' }} />
             </Pressable>
+            
             {!isDateRangeValid && (
               <Text style={styles.errorText}>End date must be after start</Text>
             )}
@@ -247,58 +291,59 @@ export default function CreateScreen() {
           {/* Error Message */}
           {error && (
             <Animated.View entering={FadeIn} style={styles.errorContainer}>
+              <Ionicons name="alert-circle" size={16} color={Colors.error} />
               <Text style={styles.errorText}>{error}</Text>
             </Animated.View>
           )}
 
-          {/* CTA Button */}
-          <Animated.View
-            entering={FadeInUp.delay(300).duration(400)}
-            style={styles.ctaContainer}
-          >
-            <Pressable
-              onPress={handleCreateWorld}
-              disabled={!isValid || isSubmitting}
-              style={({ pressed }) => [
-                styles.ctaButton,
-                pressed && isValid && !isSubmitting && styles.ctaButtonPressed,
-              ]}
-            >
-              {isValid && !isSubmitting ? (
-                <LinearGradient
-                  colors={[Colors.accent, Colors.accentDark]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.ctaGradient}
-                >
-                  <Text style={styles.ctaText}>{ctaLabel}</Text>
-                </LinearGradient>
-              ) : isSubmitting ? (
-                <LinearGradient
-                  colors={[Colors.accent, Colors.accentDark]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.ctaGradient}
-                >
-                  <ActivityIndicator size="small" color={Colors.textPrimary} />
-                </LinearGradient>
-              ) : (
-                <View style={[styles.ctaGradient, styles.ctaDisabled]}>
-                  <Text style={[styles.ctaText, styles.ctaTextDisabled]}>{ctaLabel}</Text>
-                </View>
-              )}
-            </Pressable>
-
-            {/* Subtle hint */}
-            <Text style={styles.hint}>
+          {/* Hint Text */}
+          <Animated.View entering={FadeInUp.delay(400).duration(500)} style={styles.hintContainer}>
+             <Text style={styles.hintText}>
               {isReviewFlow
-                ? "We'll find photos from your camera roll"
-                : "Invite friends after creating"}
+                ? "This looks like a past event. We'll help you find photos from your camera roll."
+                : "You can invite friends to join this World after you create it."}
             </Text>
           </Animated.View>
+
+        </View>
       </ScrollView>
 
-      {/* Calendar Sheet - only render when needed to avoid touch issues */}
+      {/* Floating Bottom Bar */}
+      <Animated.View 
+        entering={FadeInUp.delay(300).duration(500)}
+        style={[styles.bottomBar, { bottom: Layout.tabBarHeight, paddingBottom: Math.max(Spacing.lg, insets.bottom) }]}
+      >
+        <Pressable
+          onPress={handleCreateWorld}
+          disabled={!isValid || isSubmitting}
+          style={({ pressed }) => [
+            styles.ctaButton,
+            pressed && isValid && !isSubmitting && styles.ctaButtonPressed,
+            (!isValid || isSubmitting) && styles.ctaButtonDisabled
+          ]}
+        >
+           {isSubmitting ? (
+             <ActivityIndicator color={Colors.textPrimary} />
+           ) : (
+            <>
+              <Text style={[styles.ctaText, !isValid && styles.ctaTextDisabled]}>{ctaLabel}</Text>
+              {isValid && <Ionicons name="arrow-forward" size={20} color={Colors.textPrimary} />}
+            </>
+           )}
+        </Pressable>
+      </Animated.View>
+
+      {/* Back Button (Fixed) */}
+      <Pressable 
+        style={[styles.backButton, { top: insets.top + Spacing.sm }]} 
+        onPress={() => router.back()}
+      >
+        <View style={styles.backButtonBlur}>
+           <Ionicons name="close" size={24} color={Colors.textPrimary} />
+        </View>
+      </Pressable>
+
+      {/* Calendar Sheet */}
       {calendarVisible && (
         <CalendarRangeSheet
           visible={calendarVisible}
@@ -324,108 +369,199 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.xxl,
+    padding: 0,
   },
 
-  // Header
-  header: {
-    paddingTop: Spacing.xxl,
-    paddingBottom: Spacing.xl,
+  // Cover Area
+  coverContainer: {
+    height: COVER_HEIGHT,
+    width: '100%',
+    position: 'relative',
   },
-  title: {
-    color: Colors.textPrimary,
-    fontSize: 34,
-    fontWeight: '700',
-    letterSpacing: -0.5,
+  coverPressable: {
+    flex: 1,
+    width: '100%',
   },
-
-  // Cover Section
-  coverSection: {
-    marginBottom: Spacing.xl,
+  coverImage: {
+    width: '100%',
+    height: '100%',
   },
-
-  // Input Sections
-  inputSection: {
-    marginBottom: Spacing.xl,
+  coverPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
-  label: {
+  addCoverIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  addCoverText: {
     color: Colors.textSecondary,
     fontSize: Typography.sizes.sm,
     fontWeight: '500',
-    marginBottom: Spacing.sm,
   },
-  input: {
-    fontSize: 20,
-    color: Colors.textPrimary,
-    fontWeight: '500',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  gradientOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 160,
   },
-
-  // Date Button
-  dateButton: {
+  editBadge: {
+    position: 'absolute',
+    top: 20,
+    right: 20, // Will be adjusted by safe area in a real header, but we have a custom close button
+    marginTop: 40, // Push down a bit
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+    gap: 4,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
   },
-  dateText: {
-    fontSize: 20,
+  editBadgeText: {
     color: Colors.textPrimary,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '600',
   },
-  dateChevron: {
-    fontSize: 24,
+
+  // Form Content
+  formContent: {
+    paddingHorizontal: Spacing.lg,
+    marginTop: -40, // Pull up into gradient
+  },
+  titleInputContainer: {
+    marginBottom: Spacing.xl,
+  },
+  titleInput: {
+    fontSize: 40,
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    letterSpacing: -1,
+    lineHeight: 48,
+    textShadowColor: 'rgba(0,0,0,0.5)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
+  },
+
+  // Date Section
+  dateSection: {
+    marginBottom: Spacing.xl,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    padding: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing.md,
+  },
+  dateIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 87, 61, 0.1)', // Accent tint
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dateValue: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.md,
+    fontWeight: '600',
+  },
+  
+  // Hint
+  hintContainer: {
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+  },
+  hintText: {
     color: Colors.textMuted,
+    fontSize: Typography.sizes.sm,
+    lineHeight: 20,
   },
+
+  // Error
   errorContainer: {
-    marginBottom: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    padding: Spacing.md,
+    borderRadius: Radius.md,
   },
   errorText: {
     color: Colors.error,
     fontSize: Typography.sizes.sm,
-    marginTop: Spacing.sm,
   },
 
-  // CTA
-  ctaContainer: {
-    alignItems: 'center',
-    marginTop: Spacing.xl,
+  // Bottom Bar
+  bottomBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: Colors.background,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
   },
   ctaButton: {
-    width: '100%',
-    borderRadius: Radius.lg,
-    overflow: 'hidden',
-  },
-  ctaButtonPressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.98 }],
-  },
-  ctaGradient: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: Spacing.lg,
-    minHeight: 56,
+    backgroundColor: Colors.accent,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.full,
+    gap: Spacing.sm,
+    ...Shadows.glow,
   },
-  ctaDisabled: {
-    backgroundColor: Colors.surface,
+  ctaButtonPressed: {
+    transform: [{ scale: 0.98 }],
+    opacity: 0.9,
+  },
+  ctaButtonDisabled: {
+    backgroundColor: Colors.surfaceElevated,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   ctaText: {
     color: Colors.textPrimary,
-    fontSize: Typography.sizes.lg,
+    fontSize: Typography.sizes.md,
     fontWeight: '600',
   },
   ctaTextDisabled: {
     color: Colors.textMuted,
   },
-  hint: {
-    color: Colors.textMuted,
-    fontSize: Typography.sizes.sm,
-    marginTop: Spacing.md,
-    textAlign: 'center',
+
+  // Custom Back Button
+  backButton: {
+    position: 'absolute',
+    left: Spacing.lg,
+    zIndex: 100,
+  },
+  backButtonBlur: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
   },
 });
