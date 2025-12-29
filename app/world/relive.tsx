@@ -7,22 +7,19 @@ import {
   Dimensions,
   Image,
   Platform,
-  StatusBar,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
+import { Ionicons } from '@expo/vector-icons';
 import Animated, {
   FadeIn,
   FadeOut,
   useAnimatedStyle,
   useSharedValue,
   withTiming,
-  withSequence,
-  withDelay,
-  withRepeat,
-  interpolate,
   Easing,
   runOnJS,
   cancelAnimation,
@@ -31,8 +28,9 @@ import * as Haptics from 'expo-haptics';
 
 import { Avatar } from '@/components';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
-import { getWorldById } from '@/constants/mockData';
-import type { Photo } from '@/constants/mockData';
+import type { MediaWithOwner, World } from '@/lib/database.types';
+import { getWorldMedia, getMediaUrls } from '@/lib/api/media';
+import { getWorld } from '@/lib/api/worlds';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const PHOTO_DURATION = 4000; // 4 seconds per photo
@@ -55,23 +53,77 @@ export default function ReliveScreen() {
   const insets = useSafeAreaInsets();
   const { id: worldId } = useLocalSearchParams<{ id: string }>();
 
+  // Data state
+  const [world, setWorld] = useState<World | null>(null);
+  const [photos, setPhotos] = useState<MediaWithOwner[]>([]);
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // UI state
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [showControls, setShowControls] = useState(true);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const controlsTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Get world data
-  const world = getWorldById(worldId);
-  const photos = world?.photos || [];
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Animation values
-  const progress = useSharedValue(0);
   const photoOpacity = useSharedValue(1);
   const kenBurnsScale = useSharedValue(1);
   const kenBurnsX = useSharedValue(0);
   const kenBurnsY = useSharedValue(0);
   const controlsOpacity = useSharedValue(1);
+
+  // Fetch data on mount
+  useEffect(() => {
+    async function fetchData() {
+      if (!worldId) {
+        setError('No world ID provided');
+        setLoading(false);
+        return;
+      }
+
+      // Fetch world info
+      const worldResult = await getWorld(worldId);
+      if (worldResult.error || !worldResult.data) {
+        setError(worldResult.error || 'World not found');
+        setLoading(false);
+        return;
+      }
+      setWorld(worldResult.data);
+
+      // Fetch media (images only for relive)
+      const mediaResult = await getWorldMedia(worldId);
+      if (mediaResult.error) {
+        setError(mediaResult.error);
+        setLoading(false);
+        return;
+      }
+
+      // Filter to images only
+      const imageMedia = mediaResult.data.filter(m => m.type === 'image');
+      
+      if (imageMedia.length === 0) {
+        setError('No photos to relive');
+        setLoading(false);
+        return;
+      }
+
+      setPhotos(imageMedia);
+
+      // Get signed URLs for all photos
+      const storagePaths = imageMedia.map(m => m.storage_path);
+      const urlsResult = await getMediaUrls(storagePaths);
+      
+      if (urlsResult.data) {
+        setPhotoUrls(urlsResult.data);
+      }
+
+      setLoading(false);
+    }
+
+    fetchData();
+  }, [worldId]);
 
   // Ken Burns effect - random direction for each photo
   const startKenBurns = useCallback(() => {
@@ -99,7 +151,7 @@ export default function ReliveScreen() {
       duration: PHOTO_DURATION + TRANSITION_DURATION,
       easing: Easing.linear,
     });
-  }, [currentIndex]);
+  }, [currentIndex, kenBurnsScale, kenBurnsX, kenBurnsY]);
 
   // Progress to next photo
   const goToNext = useCallback(() => {
@@ -114,11 +166,11 @@ export default function ReliveScreen() {
       // End of slideshow - return to world view
       router.back();
     }
-  }, [currentIndex, photos.length, router]);
+  }, [currentIndex, photos.length, router, photoOpacity]);
 
   // Auto-advance timer
   useEffect(() => {
-    if (!isPaused && photos.length > 0) {
+    if (!loading && !isPaused && photos.length > 0) {
       startKenBurns();
       timerRef.current = setTimeout(goToNext, PHOTO_DURATION);
     }
@@ -128,7 +180,7 @@ export default function ReliveScreen() {
         clearTimeout(timerRef.current);
       }
     };
-  }, [currentIndex, isPaused, photos.length, goToNext, startKenBurns]);
+  }, [currentIndex, isPaused, photos.length, loading, goToNext, startKenBurns]);
 
   // Auto-hide controls
   useEffect(() => {
@@ -144,7 +196,7 @@ export default function ReliveScreen() {
         clearTimeout(controlsTimerRef.current);
       }
     };
-  }, [showControls, isPaused]);
+  }, [showControls, isPaused, controlsOpacity]);
 
   const triggerHaptic = () => {
     if (Platform.OS !== 'web') {
@@ -216,10 +268,20 @@ export default function ReliveScreen() {
     opacity: controlsOpacity.value,
   }));
 
-  if (!world || photos.length === 0) {
+  // Loading state
+  if (loading) {
     return (
       <View style={[styles.container, styles.errorContainer]}>
-        <Text style={styles.errorText}>No photos to relive</Text>
+        <ActivityIndicator size="large" color={Colors.accent} />
+      </View>
+    );
+  }
+
+  // Error or empty state
+  if (error || !world || photos.length === 0) {
+    return (
+      <View style={[styles.container, styles.errorContainer]}>
+        <Text style={styles.errorText}>{error || 'No photos to relive'}</Text>
         <Pressable onPress={() => router.back()}>
           <Text style={styles.errorLink}>Go Back</Text>
         </Pressable>
@@ -228,7 +290,8 @@ export default function ReliveScreen() {
   }
 
   const currentPhoto = photos[currentIndex];
-  const photoDate = new Date(currentPhoto.timestamp);
+  const currentPhotoUrl = photoUrls[currentPhoto.storage_path];
+  const photoDate = new Date(currentPhoto.taken_at ?? currentPhoto.created_at);
   const dateLabel = photoDate.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -244,11 +307,17 @@ export default function ReliveScreen() {
       {/* Photo */}
       <Pressable style={styles.photoContainer} onPress={handleTap}>
         <Animated.View style={[styles.photoWrapper, photoStyle]}>
-          <Image
-            source={{ uri: currentPhoto.uri }}
-            style={styles.photo}
-            resizeMode="cover"
-          />
+          {currentPhotoUrl ? (
+            <Image
+              source={{ uri: currentPhotoUrl }}
+              style={styles.photo}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.photoPlaceholder}>
+              <ActivityIndicator size="large" color={Colors.accent} />
+            </View>
+          )}
         </Animated.View>
       </Pressable>
 
@@ -270,10 +339,7 @@ export default function ReliveScreen() {
         <View style={[styles.topBar, { paddingTop: insets.top + Spacing.sm }]}>
           <Pressable style={styles.closeButton} onPress={handleClose}>
             <BlurView intensity={40} tint="dark" style={styles.closeButtonBlur}>
-              <View style={styles.closeIcon}>
-                <View style={styles.closeLine1} />
-                <View style={styles.closeLine2} />
-              </View>
+              <Ionicons name="close" size={20} color={Colors.textPrimary} />
             </BlurView>
           </Pressable>
 
@@ -291,11 +357,11 @@ export default function ReliveScreen() {
           <View style={styles.photoInfo}>
             <View style={styles.photoOwnerRow}>
               <Avatar
-                uri={currentPhoto.owner.avatar}
+                uri={currentPhoto.owner.avatar_url ?? undefined}
                 name={currentPhoto.owner.name}
                 size="medium"
               />
-              <View style={styles.ownerInfo}>
+              <View style={styles.ownerInfoContainer}>
                 <Text style={styles.ownerName}>{currentPhoto.owner.name}</Text>
                 <Text style={styles.photoTime}>{dateLabel} at {timeLabel}</Text>
               </View>
@@ -305,28 +371,20 @@ export default function ReliveScreen() {
           {/* Playback controls */}
           <View style={styles.playbackControls}>
             <Pressable style={styles.skipButton} onPress={handlePrevious}>
-              <View style={styles.skipIcon}>
-                <View style={[styles.skipTriangle, styles.skipTriangleLeft]} />
-                <View style={[styles.skipTriangle, styles.skipTriangleLeft]} />
-              </View>
+              <Ionicons name="play-skip-back" size={20} color={Colors.textPrimary} />
             </Pressable>
 
             <Pressable style={styles.playPauseButton} onPress={handleTap}>
-              {isPaused ? (
-                <View style={styles.playIcon} />
-              ) : (
-                <View style={styles.pauseIcon}>
-                  <View style={styles.pauseBar} />
-                  <View style={styles.pauseBar} />
-                </View>
-              )}
+              <Ionicons 
+                name={isPaused ? "play" : "pause"} 
+                size={28} 
+                color={Colors.textPrimary} 
+                style={isPaused ? { marginLeft: 4 } : undefined}
+              />
             </Pressable>
 
             <Pressable style={styles.skipButton} onPress={handleSkip}>
-              <View style={styles.skipIcon}>
-                <View style={[styles.skipTriangle, styles.skipTriangleRight]} />
-                <View style={[styles.skipTriangle, styles.skipTriangleRight]} />
-              </View>
+              <Ionicons name="play-skip-forward" size={20} color={Colors.textPrimary} />
             </Pressable>
           </View>
 
@@ -354,10 +412,7 @@ export default function ReliveScreen() {
           style={styles.pauseIndicator}
         >
           <BlurView intensity={60} tint="dark" style={styles.pauseIndicatorBlur}>
-            <View style={styles.pauseIndicatorIcon}>
-              <View style={styles.pauseIndicatorBar} />
-              <View style={styles.pauseIndicatorBar} />
-            </View>
+            <Ionicons name="pause" size={32} color={Colors.textPrimary} />
             <Text style={styles.pauseIndicatorText}>Paused</Text>
           </BlurView>
         </Animated.View>
@@ -384,6 +439,13 @@ const styles = StyleSheet.create({
   photo: {
     width: '100%',
     height: '100%',
+  },
+  photoPlaceholder: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.background,
   },
 
   // Gradients
@@ -427,28 +489,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.3)',
   },
-  closeIcon: {
-    width: 16,
-    height: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeLine1: {
-    position: 'absolute',
-    width: 16,
-    height: 2,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 1,
-    transform: [{ rotate: '45deg' }],
-  },
-  closeLine2: {
-    position: 'absolute',
-    width: 16,
-    height: 2,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 1,
-    transform: [{ rotate: '-45deg' }],
-  },
   worldInfo: {
     alignItems: 'center',
   },
@@ -478,7 +518,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.md,
   },
-  ownerInfo: {
+  ownerInfoContainer: {
     flex: 1,
   },
   ownerName: {
@@ -508,26 +548,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  skipIcon: {
-    flexDirection: 'row',
-    gap: 2,
-  },
-  skipTriangle: {
-    width: 0,
-    height: 0,
-    borderTopWidth: 6,
-    borderBottomWidth: 6,
-    borderTopColor: 'transparent',
-    borderBottomColor: 'transparent',
-  },
-  skipTriangleLeft: {
-    borderRightWidth: 8,
-    borderRightColor: Colors.textPrimary,
-  },
-  skipTriangleRight: {
-    borderLeftWidth: 8,
-    borderLeftColor: Colors.textPrimary,
-  },
   playPauseButton: {
     width: 64,
     height: 64,
@@ -535,27 +555,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.accent,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  playIcon: {
-    width: 0,
-    height: 0,
-    marginLeft: 4,
-    borderLeftWidth: 18,
-    borderTopWidth: 12,
-    borderBottomWidth: 12,
-    borderLeftColor: Colors.textPrimary,
-    borderTopColor: 'transparent',
-    borderBottomColor: 'transparent',
-  },
-  pauseIcon: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  pauseBar: {
-    width: 6,
-    height: 20,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 2,
   },
 
   // Progress
@@ -596,17 +595,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  pauseIndicatorIcon: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: Spacing.sm,
-  },
-  pauseIndicatorBar: {
-    width: 8,
-    height: 28,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 3,
+    gap: Spacing.sm,
   },
   pauseIndicatorText: {
     color: Colors.textPrimary,

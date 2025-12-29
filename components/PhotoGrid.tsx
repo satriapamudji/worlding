@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useCallback, useState } from 'react';
@@ -19,7 +20,8 @@ import Animated, {
     withTiming,
 } from 'react-native-reanimated';
 
-import { Colors, Layout, Radius, Spacing } from '@/constants/theme';
+import { Colors, Layout, Radius, Spacing, Typography } from '@/constants/theme';
+import { formatDuration } from '@/lib/media-utils';
 import { Avatar } from './Avatar';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -31,8 +33,10 @@ const ITEM_WIDTH = (SCREEN_WIDTH - (GRID_PADDING * 2) - (GAP * (COLUMN_COUNT - 1
 export interface Photo {
   id: string;
   uri: string;
+  type?: 'image' | 'video';
   width?: number;
   height?: number;
+  duration?: number;
   owner?: {
     id: string;
     name: string;
@@ -194,6 +198,18 @@ function PhotoItem({
               <Text style={styles.checkmarkText}>✓</Text>
             </LinearGradient>
           )}
+
+          {/* Video indicator */}
+          {photo.type === 'video' && (
+            <View style={styles.videoIndicator}>
+              <Ionicons name="play" size={10} color={Colors.textPrimary} />
+              {photo.duration !== undefined && (
+                <Text style={styles.videoDuration}>
+                  {formatDuration(photo.duration)}
+                </Text>
+              )}
+            </View>
+          )}
         </Animated.View>
       </Pressable>
     </View>
@@ -250,6 +266,23 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 13,
     fontWeight: 'bold',
+  },
+  videoIndicator: {
+    position: 'absolute',
+    top: Spacing.xs,
+    left: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  videoDuration: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.xs - 2,
+    fontWeight: '600',
   },
 });
 

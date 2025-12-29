@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -8,21 +8,19 @@ import {
   Dimensions,
   Image,
   Share,
+  ActivityIndicator,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, {
   FadeIn,
-  FadeInDown,
   FadeInUp,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
-  withSequence,
-  withDelay,
   interpolate,
   useAnimatedScrollHandler,
   Extrapolation,
@@ -33,8 +31,9 @@ import * as Haptics from 'expo-haptics';
 import { Avatar, AvatarStack, ArchiveCelebration } from '@/components';
 import { RequireAuth } from '@/components/RequireAuth';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
-import { getWorldById, MOCK_WORLDS } from '@/constants/mockData';
-import type { Photo, WorldMember, WorldState } from '@/constants/mockData';
+import { getWorld, getWorldMedia, archiveWorld } from '@/lib/api';
+import { formatDateRange } from '@/lib/database.types';
+import type { WorldWithDetails, MediaWithOwner, WorldMemberWithProfile, WorldState, SyncStatus } from '@/lib/database.types';
 import { formatDuration } from '@/lib/media-utils';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -56,15 +55,37 @@ const buildWorldShareUrl = (worldId: string, mode: ShareMode) => {
   return `${WORLD_SHARE_BASE_URL}/${worldId}?mode=${mode}`;
 };
 
+// Local types for UI rendering
+interface DisplayMember {
+  id: string;
+  name: string;
+  avatar: string | null;
+  syncStatus: SyncStatus;
+}
+
+interface DisplayPhoto {
+  id: string;
+  uri: string;
+  thumbnailUri?: string;
+  type: 'image' | 'video';
+  duration?: number;
+  timestamp: Date;
+  owner: {
+    id: string;
+    name: string;
+    avatar: string | null;
+  };
+}
+
 // Group photos by date
 interface PhotoGroup {
   date: string;
   dateLabel: string;
-  photos: Photo[];
+  photos: DisplayPhoto[];
 }
 
-function groupPhotosByDate(photos: Photo[]): PhotoGroup[] {
-  const groups: Map<string, Photo[]> = new Map();
+function groupPhotosByDate(photos: DisplayPhoto[]): PhotoGroup[] {
+  const groups: Map<string, DisplayPhoto[]> = new Map();
 
   photos.forEach(photo => {
     const date = new Date(photo.timestamp);
@@ -111,7 +132,7 @@ function groupPhotosByDate(photos: Photo[]): PhotoGroup[] {
 interface PhotoRow {
   type: 'photos';
   id: string;
-  photos: Photo[];
+  photos: DisplayPhoto[];
 }
 
 interface DateHeader {
@@ -124,7 +145,7 @@ interface DateHeader {
 interface SyncStatusSection {
   type: 'sync-status';
   id: string;
-  members: WorldMember[];
+  members: DisplayMember[];
 }
 
 interface WorldActionSection {
@@ -137,7 +158,7 @@ type ListItem = PhotoRow | DateHeader | SyncStatusSection | WorldActionSection;
 
 function createListData(
   photoGroups: PhotoGroup[],
-  members: WorldMember[],
+  members: DisplayMember[],
   state: WorldState
 ): ListItem[] {
   const items: ListItem[] = [];
@@ -188,19 +209,55 @@ function createListData(
   return items;
 }
 
+// Transform Supabase data to display format
+function transformMember(member: WorldMemberWithProfile): DisplayMember {
+  return {
+    id: member.id,
+    name: member.profile.name,
+    avatar: member.profile.avatar_url,
+    syncStatus: member.sync_status,
+  };
+}
+
+function transformMedia(media: MediaWithOwner, urlMap: Record<string, string>): DisplayPhoto {
+  const signedUrl = urlMap[media.storage_path] || '';
+  return {
+    id: media.id,
+    uri: signedUrl,
+    thumbnailUri: media.thumbnail_path ? urlMap[media.thumbnail_path] : undefined,
+    type: media.type,
+    duration: media.duration ?? undefined,
+    timestamp: new Date(media.taken_at || media.created_at),
+    owner: {
+      id: media.owner.id,
+      name: media.owner.name,
+      avatar: media.owner.avatar_url,
+    },
+  };
+}
+
 export default function WorldViewScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { id, title, coverUri } = useLocalSearchParams<{
+  const { id } = useLocalSearchParams<{
     id: string;
-    title?: string;
-    coverUri?: string;
   }>();
 
+  // Data state
+  const [world, setWorld] = useState<WorldWithDetails | null>(null);
+  const [photos, setPhotos] = useState<DisplayPhoto[]>([]);
+  const [members, setMembers] = useState<DisplayMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // UI state
   const [showCelebration, setShowCelebration] = useState(false);
   const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   const [isSyncStatusExpanded, setIsSyncStatusExpanded] = useState(true);
   const [headerTopHeight, setHeaderTopHeight] = useState(0);
+  const [isArchiving, setIsArchiving] = useState(false);
+
+  // Animation values
   const scrollY = useSharedValue(0);
   const backButtonScale = useSharedValue(1);
   const shareButtonScale = useSharedValue(1);
@@ -208,28 +265,78 @@ export default function WorldViewScreen() {
   const reliveButtonScale = useSharedValue(1);
   const completeButtonScale = useSharedValue(1);
 
-  // Get world data
-  const world = getWorldById(id) || (id === 'world-new' ? {
-    id: 'world-new',
-    title: title || 'New World',
-    coverUri: coverUri || 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba?w=800',
-    dateRange: 'Just now',
-    startDate: new Date(),
-    endDate: new Date(),
-    photoCount: 34,
-    members: [],
-    photos: MOCK_WORLDS[0]?.photos || [],
-    state: 'active' as WorldState,
-    createdBy: { id: 'user-1', name: 'You' },
-    createdAt: new Date(),
-  } : null);
+  // Fetch world data
+  const loadWorldData = useCallback(async () => {
+    if (!id) return;
+    
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Fetch world details
+      const worldResult = await getWorld(id);
+      if (worldResult.error || !worldResult.data) {
+        setError(worldResult.error || 'World not found');
+        setLoading(false);
+        return;
+      }
+
+      setWorld(worldResult.data);
+      
+      // Transform members
+      const displayMembers = worldResult.data.members.map(transformMember);
+      setMembers(displayMembers);
+
+      // Fetch media with signed URLs
+      const mediaResult = await getWorldMedia(id);
+      if (mediaResult.error) {
+        console.warn('Failed to load media:', mediaResult.error);
+        setPhotos([]);
+      } else if (mediaResult.data.length > 0) {
+        // Get signed URLs for all media
+        const { getMediaUrls } = await import('@/lib/api');
+        const storagePaths = mediaResult.data.map(m => m.storage_path);
+        const thumbnailPaths = mediaResult.data
+          .filter(m => m.thumbnail_path)
+          .map(m => m.thumbnail_path!);
+        
+        const urlResult = await getMediaUrls([...storagePaths, ...thumbnailPaths]);
+        const urlMap = urlResult.data || {};
+
+        // Transform media to display format
+        const displayPhotos = mediaResult.data.map(m => transformMedia(m, urlMap));
+        setPhotos(displayPhotos);
+      } else {
+        setPhotos([]);
+      }
+    } catch (e) {
+      console.error('Error loading world:', e);
+      setError('Failed to load world');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  // Load data on focus
+  useFocusEffect(
+    useCallback(() => {
+      loadWorldData();
+    }, [loadWorldData])
+  );
 
   // Prepare list data
   const listData = useMemo(() => {
     if (!world) return [];
-    const groups = groupPhotosByDate(world.photos);
-    return createListData(groups, world.members, world.state);
-  }, [world]);
+    const groups = groupPhotosByDate(photos);
+    return createListData(groups, members, world.state);
+  }, [world, photos, members]);
+
+  // Derived values
+  const dateRange = world ? formatDateRange(world.start_date, world.end_date) : '';
+  const coverUrl = world?.cover_url || 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba?w=800';
+  const isArchived = world?.state === 'archived';
+  const isBuilding = world?.state === 'building';
+  const pendingMembers = members.filter(m => m.syncStatus !== 'synced');
 
   const scrollHandler = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -266,21 +373,27 @@ export default function WorldViewScreen() {
     ),
   }));
 
-  if (!world) {
+  // Loading state
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={Colors.accent} />
+        <Text style={styles.loadingText}>Loading world...</Text>
+      </View>
+    );
+  }
+
+  // Error state
+  if (error || !world) {
     return (
       <View style={[styles.container, styles.errorContainer]}>
-        <Text style={styles.errorText}>World not found</Text>
+        <Text style={styles.errorText}>{error || 'World not found'}</Text>
         <Pressable onPress={() => router.back()}>
           <Text style={styles.errorLink}>Go Back</Text>
         </Pressable>
       </View>
     );
   }
-
-  const isArchived = world.state === 'archived';
-  const isBuilding = world.state === 'building';
-  const pendingMembers = world.members.filter(m => m.syncStatus !== 'synced');
-  const syncedMembers = world.members.filter(m => m.syncStatus === 'synced');
 
   const triggerHaptic = (style: Haptics.ImpactFeedbackStyle = Haptics.ImpactFeedbackStyle.Light) => {
     if (Platform.OS !== 'web') {
@@ -314,7 +427,16 @@ export default function WorldViewScreen() {
 
   const handleAddPhotos = () => {
     triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
-    console.log('Add photos pressed');
+    router.push({
+      pathname: '/review',
+      params: {
+        worldId: id,
+        worldName: world.title,
+        startDate: world.start_date,
+        endDate: world.end_date,
+        coverUri: coverUrl,
+      },
+    });
   };
 
   const handleRelive = () => {
@@ -327,12 +449,26 @@ export default function WorldViewScreen() {
     setShowArchiveConfirm(true);
   };
 
-  const confirmArchive = () => {
+  const confirmArchive = async () => {
     triggerHaptic(Haptics.ImpactFeedbackStyle.Heavy);
     setShowArchiveConfirm(false);
-    // In a real app, this would call the backend to archive the World
-    // For now, we'll just show the celebration
-    setShowCelebration(true);
+    setIsArchiving(true);
+
+    try {
+      const result = await archiveWorld(id!);
+      if (result.error) {
+        console.error('Failed to archive world:', result.error);
+        // TODO: Show error toast
+        return;
+      }
+      // Refresh world data to get updated state
+      await loadWorldData();
+      setShowCelebration(true);
+    } catch (e) {
+      console.error('Error archiving world:', e);
+    } finally {
+      setIsArchiving(false);
+    }
   };
 
   const cancelArchive = () => {
@@ -360,23 +496,24 @@ export default function WorldViewScreen() {
     });
   };
 
-  const handlePhotoPress = (photo: Photo) => {
+  const handlePhotoPress = (photo: DisplayPhoto) => {
     triggerHaptic();
-    // Find the index of this photo in the world's photos array
-    const photoIndex = world?.photos.findIndex(p => p.id === photo.id) ?? 0;
+    // Find the index of this photo in the photos array
+    const photoIndex = photos.findIndex(p => p.id === photo.id);
     router.push({
       pathname: '/world/media',
       params: {
         worldId: id,
         mediaId: photo.id,
-        initialIndex: photoIndex.toString(),
+        initialIndex: photoIndex >= 0 ? photoIndex.toString() : '0',
       },
     });
   };
 
-  const handleNudgeMember = (member: WorldMember) => {
-    triggerHaptic();
-    console.log('Nudge member:', member.name);
+  const handleNudgeAll = () => {
+    triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
+    // In a real app, this would send notifications to all pending members
+    console.log('Nudge all pending members:', pendingMembers.map(m => m.name));
   };
 
   // Button animations
@@ -415,7 +552,7 @@ export default function WorldViewScreen() {
     <Animated.View style={[styles.header, headerStyle]}>
       {/* Cover Image */}
       <Image
-        source={{ uri: world.coverUri }}
+        source={{ uri: coverUrl }}
         style={styles.coverImage}
         resizeMode="cover"
       />
@@ -446,11 +583,11 @@ export default function WorldViewScreen() {
               isArchived ? styles.statusDotArchived : isBuilding ? styles.statusDotBuilding : styles.statusDotActive
             ]} />
             <Text style={styles.statusText}>
-              {isArchived ? 'Complete' : isBuilding ? 'Building...' : 'Active'}
+              {isArchived ? 'Complete' : isBuilding ? 'Collecting' : 'Live'}
             </Text>
           </View>
           <View style={styles.dateBadge}>
-            <Text style={styles.dateText}>{world.dateRange}</Text>
+            <Text style={styles.dateText}>{dateRange}</Text>
           </View>
         </View>
 
@@ -462,7 +599,7 @@ export default function WorldViewScreen() {
         {/* Members Row */}
         <View style={styles.membersRow}>
           <AvatarStack
-            users={world.members}
+            users={members.map(m => ({ id: m.id, name: m.name, avatar: m.avatar ?? undefined }))}
             size="medium"
             maxDisplay={5}
           />
@@ -479,12 +616,12 @@ export default function WorldViewScreen() {
         <View style={styles.statsRow}>
           <View style={styles.statsLeft}>
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>{world.photos.length}</Text>
+              <Text style={styles.statValue}>{photos.length}</Text>
               <Text style={styles.statLabel}>photos</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
-              <Text style={styles.statValue}>{world.members.length}</Text>
+              <Text style={styles.statValue}>{members.length}</Text>
               <Text style={styles.statLabel}>members</Text>
             </View>
           </View>
@@ -496,23 +633,32 @@ export default function WorldViewScreen() {
   // Render Sync Status Section
   const renderWorldAction = (action: WorldActionSection['action']) => {
     if (action === 'complete') {
+      const hasPendingMembers = pendingMembers.length > 0;
+      
       return (
         <View style={styles.actionSection}>
           <Pressable
-            onPress={handleArchive}
-            style={styles.completeButton}
-            {...createPressHandlers(completeButtonScale)}
+            onPress={hasPendingMembers ? undefined : handleArchive}
+            style={[styles.completeButton, hasPendingMembers && styles.completeButtonDisabled]}
+            {...(hasPendingMembers ? {} : createPressHandlers(completeButtonScale))}
           >
-            <Animated.View style={completeButtonAnimStyle}>
-            <LinearGradient
-              colors={[Colors.success, '#059669']}
-              style={styles.completeButtonInner}
-            >
-              <Text style={styles.completeButtonText}>Complete World</Text>
-            </LinearGradient>
-          </Animated.View>
-        </Pressable>
-      </View>
+            <Animated.View style={hasPendingMembers ? undefined : completeButtonAnimStyle}>
+              <LinearGradient
+                colors={hasPendingMembers ? [Colors.surface, Colors.surface] : [Colors.success, '#059669']}
+                style={styles.completeButtonInner}
+              >
+                <Text style={[styles.completeButtonText, hasPendingMembers && styles.completeButtonTextDisabled]}>
+                  Complete World
+                </Text>
+              </LinearGradient>
+            </Animated.View>
+          </Pressable>
+          {hasPendingMembers && (
+            <Text style={styles.completeButtonHint}>
+              Waiting for {pendingMembers.length} {pendingMembers.length === 1 ? 'member' : 'members'} to add photos
+            </Text>
+          )}
+        </View>
       );
     }
 
@@ -528,7 +674,7 @@ export default function WorldViewScreen() {
               colors={[Colors.accent, Colors.accentDark]}
               style={styles.reliveButtonInner}
             >
-              <View style={styles.relivePlayIcon} />
+              <Ionicons name="play" size={18} color={Colors.textPrimary} />
               <Text style={styles.reliveButtonText}>Relive This Memory</Text>
             </LinearGradient>
           </Animated.View>
@@ -541,7 +687,7 @@ export default function WorldViewScreen() {
     setIsSyncStatusExpanded((prev) => !prev);
   };
 
-  const renderSyncStatus = (members: WorldMember[]) => (
+  const renderSyncStatus = (syncMembers: DisplayMember[]) => (
     <Animated.View
       entering={FadeIn.duration(300)}
       style={styles.syncStatusWrapper}
@@ -557,7 +703,7 @@ export default function WorldViewScreen() {
           <View style={styles.syncStatusHeaderText}>
             <Text style={styles.syncStatusTitle}>Waiting for photos</Text>
             <Text style={styles.syncStatusSubtitle}>
-              {members.length} {members.length === 1 ? 'person' : 'people'} haven't added yet
+              {syncMembers.length} {syncMembers.length === 1 ? 'person' : 'people'} haven't added yet
             </Text>
           </View>
           <Ionicons
@@ -567,30 +713,31 @@ export default function WorldViewScreen() {
           />
         </Pressable>
         {isSyncStatusExpanded && (
-          <View style={styles.syncStatusMembers}>
-            {members.map((member) => (
-              <Pressable
-                key={member.id}
-                style={styles.syncMemberItem}
-                onPress={() => handleNudgeMember(member)}
-              >
-                <Avatar
-                  uri={member.avatar}
-                  name={member.name}
-                  size="medium"
-                />
-                <View style={styles.syncMemberInfo}>
-                  <Text style={styles.syncMemberName}>{member.name}</Text>
-                  <Text style={styles.syncMemberStatus}>
-                    {member.syncStatus === 'syncing' ? 'Uploading...' : 'Not added yet'}
-                  </Text>
+          <>
+            <View style={styles.syncStatusMembers}>
+              {syncMembers.map((member) => (
+                <View
+                  key={member.id}
+                  style={styles.syncMemberItem}
+                >
+                  <Avatar
+                    uri={member.avatar ?? undefined}
+                    name={member.name}
+                    size="medium"
+                  />
+                  <View style={styles.syncMemberInfo}>
+                    <Text style={styles.syncMemberName}>{member.name}</Text>
+                    <Text style={styles.syncMemberStatus}>
+                      {member.syncStatus === 'syncing' ? 'Uploading...' : 'Not added yet'}
+                    </Text>
+                  </View>
                 </View>
-                <View style={styles.nudgeButton}>
-                  <Text style={styles.nudgeButtonText}>Nudge</Text>
-                </View>
-              </Pressable>
-            ))}
-          </View>
+              ))}
+            </View>
+            <Pressable style={styles.nudgeAllButton} onPress={handleNudgeAll}>
+              <Text style={styles.nudgeAllButtonText}>Nudge All</Text>
+            </Pressable>
+          </>
         )}
       </View>
     </Animated.View>
@@ -651,10 +798,7 @@ export default function WorldViewScreen() {
               colors={[Colors.accent, Colors.accentDark]}
               style={styles.emptyStateButton}
             >
-              <View style={styles.fabIcon}>
-                <View style={styles.fabPlus1} />
-                <View style={styles.fabPlus2} />
-              </View>
+              <Ionicons name="add" size={20} color={Colors.textPrimary} />
               <Text style={styles.emptyStateButtonText}>Add Photos</Text>
             </LinearGradient>
           </Animated.View>
@@ -665,12 +809,12 @@ export default function WorldViewScreen() {
       {!isArchived && (
         <View style={styles.emptyStateTips}>
           <View style={styles.emptyStateTip}>
-            <Text style={styles.tipIcon}>📸</Text>
+            <Ionicons name="camera-outline" size={14} color={Colors.textMuted} />
             <Text style={styles.tipText}>Photos from your camera roll</Text>
           </View>
           <View style={styles.emptyStateTipDot} />
           <View style={styles.emptyStateTip}>
-            <Text style={styles.tipIcon}>🔄</Text>
+            <Ionicons name="sync-outline" size={14} color={Colors.textMuted} />
             <Text style={styles.tipText}>Auto-syncs with members</Text>
           </View>
         </View>
@@ -719,7 +863,7 @@ export default function WorldViewScreen() {
             {/* Video indicator */}
             {photo.type === 'video' && (
               <View style={styles.videoIndicator}>
-                <View style={styles.videoPlayIcon} />
+                <Ionicons name="play" size={10} color={Colors.textPrimary} />
                 {photo.duration && (
                   <Text style={styles.videoDuration}>
                     {formatDuration(photo.duration)}
@@ -729,7 +873,7 @@ export default function WorldViewScreen() {
             )}
             <View style={styles.photoOwner}>
               <Avatar
-                uri={photo.owner.avatar}
+                uri={photo.owner.avatar ?? undefined}
                 name={photo.owner.name}
                 size="small"
               />
@@ -756,10 +900,7 @@ export default function WorldViewScreen() {
           >
             <Animated.View style={[styles.navButton, backButtonStyle]}>
               <BlurView intensity={50} tint="dark" style={styles.navButtonBlur}>
-                <View style={styles.backIconContainer}>
-                  <View style={styles.chevronLine1} />
-                  <View style={styles.chevronLine2} />
-                </View>
+                <Ionicons name="chevron-back" size={20} color={Colors.textPrimary} />
               </BlurView>
             </Animated.View>
           </Pressable>
@@ -788,7 +929,7 @@ export default function WorldViewScreen() {
           renderItem={renderItem}
           keyExtractor={(item) => item.id}
           ListHeaderComponent={renderHeader}
-          ListEmptyComponent={world.photos.length === 0 ? renderEmptyState : null}
+          ListEmptyComponent={photos.length === 0 ? renderEmptyState : null}
           showsVerticalScrollIndicator={false}
           onScroll={scrollHandler}
           scrollEventThrottle={16}
@@ -807,10 +948,7 @@ export default function WorldViewScreen() {
                 colors={[Colors.accent, Colors.accentDark]}
                 style={styles.fabGradient}
               >
-                <View style={styles.fabIcon}>
-                  <View style={styles.fabPlus1} />
-                  <View style={styles.fabPlus2} />
-                </View>
+                <Ionicons name="add" size={20} color={Colors.textPrimary} />
                 <Text style={styles.fabText}>Add Photos</Text>
               </LinearGradient>
             </Animated.View>
@@ -829,10 +967,7 @@ export default function WorldViewScreen() {
                 style={styles.confirmCard}
               >
                 <View style={styles.confirmIconContainer}>
-                  <View style={styles.confirmIcon}>
-                    <View style={styles.confirmCheckShort} />
-                    <View style={styles.confirmCheckLong} />
-                  </View>
+                  <Ionicons name="checkmark-circle" size={40} color={Colors.success} />
                 </View>
                 <Text style={styles.confirmTitle}>Complete this World?</Text>
                 <Text style={styles.confirmMessage}>
@@ -860,8 +995,8 @@ export default function WorldViewScreen() {
         <ArchiveCelebration
           visible={showCelebration}
           worldTitle={world.title}
-          photoCount={world.photos.length}
-          memberCount={world.members.length}
+          photoCount={photos.length}
+          memberCount={members.length}
           onDismiss={handleCelebrationDismiss}
           onRelive={handleCelebrationRelive}
         />
@@ -874,6 +1009,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  loadingText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.md,
+    marginTop: Spacing.sm,
   },
 
   // Navigation Bar
@@ -1124,6 +1269,18 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.md,
     fontWeight: '600',
   },
+  completeButtonDisabled: {
+    opacity: 0.5,
+  },
+  completeButtonTextDisabled: {
+    color: Colors.textSecondary,
+  },
+  completeButtonHint: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.sm,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
+  },
 
   // Sync Status Section
   actionSection: {
@@ -1187,14 +1344,15 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.xs,
     marginTop: 2,
   },
-  nudgeButton: {
-    backgroundColor: Colors.glass,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.full,
+  nudgeAllButton: {
+    backgroundColor: Colors.accent,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    marginTop: Spacing.md,
   },
-  nudgeButtonText: {
-    color: Colors.accent,
+  nudgeAllButtonText: {
+    color: Colors.textPrimary,
     fontSize: Typography.sizes.sm,
     fontWeight: '600',
   },

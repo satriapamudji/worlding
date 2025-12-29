@@ -93,7 +93,7 @@ export default function ScanScreen() {
       }
       const code = extractInviteCode(data);
       router.replace({
-        pathname: '/invite',
+        pathname: '/join',
         params: { code },
       });
     } else {

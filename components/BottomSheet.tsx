@@ -1,20 +1,27 @@
 import { BlurView } from 'expo-blur';
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Modal,
   Pressable,
   StyleSheet,
   View,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   FadeIn,
   FadeOut,
   SlideInDown,
   SlideOutDown,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Colors, Radius, Spacing } from '@/constants/theme';
+
+const DISMISS_THRESHOLD = 100;
+const VELOCITY_THRESHOLD = 500;
 
 interface BottomSheetProps {
   visible: boolean;
@@ -34,6 +41,34 @@ interface BottomSheetProps {
  */
 export function BottomSheet({ visible, onClose, children }: BottomSheetProps) {
   const insets = useSafeAreaInsets();
+  const translateY = useSharedValue(0);
+
+  // Reset position when sheet opens
+  useEffect(() => {
+    if (visible) {
+      translateY.value = 0;
+    }
+  }, [visible, translateY]);
+
+  // Pan gesture for drag-to-dismiss
+  const panGesture = Gesture.Pan()
+    .onUpdate((event) => {
+      // Only allow dragging down (positive Y)
+      translateY.value = Math.max(0, event.translationY);
+    })
+    .onEnd((event) => {
+      // Dismiss if dragged far enough OR fast enough
+      if (translateY.value > DISMISS_THRESHOLD || event.velocityY > VELOCITY_THRESHOLD) {
+        runOnJS(onClose)();
+      } else {
+        // Reset position
+        translateY.value = 0;
+      }
+    });
+
+  const sheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
 
   return (
     <Modal
@@ -56,18 +91,24 @@ export function BottomSheet({ visible, onClose, children }: BottomSheetProps) {
         </Animated.View>
 
         {/* Sheet */}
-        <Animated.View
-          entering={SlideInDown.springify().damping(20).stiffness(150)}
-          exiting={SlideOutDown.duration(200)}
-          style={[styles.sheet, { paddingBottom: insets.bottom + Spacing.lg }]}
-        >
-          {/* Handle */}
-          <View style={styles.handleContainer}>
-            <View style={styles.handle} />
-          </View>
+        <GestureDetector gesture={panGesture}>
+          <Animated.View
+            entering={SlideInDown.duration(300)}
+            exiting={SlideOutDown.duration(200)}
+            style={[
+              styles.sheet,
+              { paddingBottom: insets.bottom + Spacing.lg },
+              sheetAnimatedStyle,
+            ]}
+          >
+            {/* Handle */}
+            <View style={styles.handleContainer}>
+              <View style={styles.handle} />
+            </View>
 
-          {children}
-        </Animated.View>
+            {children}
+          </Animated.View>
+        </GestureDetector>
       </View>
     </Modal>
   );

@@ -32,7 +32,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Colors, Spacing, Typography } from '@/constants/theme';
-import type { Photo } from '@/constants/mockData';
+import type { MediaWithOwner } from '@/lib/database.types';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -41,7 +41,8 @@ const MAX_SCALE = 4;
 const DOUBLE_TAP_SCALE = 2;
 
 interface MediaViewerProps {
-  media: Photo;
+  media: MediaWithOwner;
+  uri: string; // Pre-resolved signed URL
   isActive: boolean;
   onZoomChange?: (isZoomed: boolean) => void;
 }
@@ -51,6 +52,7 @@ interface MediaViewerProps {
  */
 export function MediaViewer({
   media,
+  uri,
   isActive,
   onZoomChange,
 }: MediaViewerProps) {
@@ -237,7 +239,7 @@ export function MediaViewer({
       <GestureDetector gesture={videoTapGesture}>
         <View style={styles.container}>
           <VideoPlayer
-            uri={media.uri}
+            uri={uri}
             isActive={isActive}
             isPlaying={isPlaying}
             onPlayingChange={setIsPlaying}
@@ -252,7 +254,7 @@ export function MediaViewer({
     <GestureDetector gesture={composedGesture}>
       <Animated.View style={[styles.container, animatedStyle]}>
         <Image
-          source={{ uri: media.uri }}
+          source={{ uri }}
           style={styles.image}
           resizeMode="contain"
         />

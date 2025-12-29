@@ -27,9 +27,9 @@ export interface Photo {
 
 /**
  * World States:
- * - active: Event ongoing or recently ended, members can add photos
- * - building: Members are still adding their photos, World is being built
- * - archived: Everyone contributed, World is a complete memory
+ * - active: Event ongoing, members can add photos ("Live")
+ * - building: Members are still adding their photos ("Collecting")
+ * - archived: Everyone contributed, World is a complete memory ("Complete")
  */
 export type WorldState = 'active' | 'building' | 'archived';
 

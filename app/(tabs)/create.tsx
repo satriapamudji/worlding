@@ -3,6 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   Platform,
   ScrollView,
   StyleSheet,
@@ -14,8 +15,10 @@ import {
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import { CalendarRangeSheet } from '@/components/CalendarRangeSheet';
+import { ImagePicker } from '@/components';
+import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { createWorld } from '@/lib/api/worlds';
 
 /**
  * Create World Screen
@@ -31,8 +34,11 @@ export default function CreateScreen() {
   defaultStart.setDate(today.getDate() - 7);
 
   const [worldName, setWorldName] = useState('');
+  const [coverUri, setCoverUri] = useState<string | null>(null);
   const [startDate, setStartDate] = useState<Date>(defaultStart);
   const [endDate, setEndDate] = useState<Date>(today);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(
@@ -49,33 +55,58 @@ export default function CreateScreen() {
 
   const isDateRangeValid = startDate <= endDate;
 
-  const handleCreateWorld = () => {
+  const handleCreateWorld = async () => {
     const trimmedName = worldName.trim();
-    if (!trimmedName || !isDateRangeValid) return;
+    if (!trimmedName || !isDateRangeValid || isSubmitting) return;
 
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
 
-    if (isPostEvent()) {
-      // Past event - go to photo review first
-      router.push({
-        pathname: '/review',
-        params: {
-          worldName: trimmedName,
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString(),
-        },
-      });
-    } else {
-      // Future event - go to invite screen
-      router.push({
-        pathname: '/invite',
-        params: {
-          worldId: 'new-' + Date.now(),
-          worldName: trimmedName,
-        },
-      });
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      // Create world in Supabase
+      const { data: world, error: createError } = await createWorld(
+        trimmedName,
+        startDate.toISOString().split('T')[0], // Format as YYYY-MM-DD
+        endDate.toISOString().split('T')[0],
+        coverUri
+      );
+
+      if (createError || !world) {
+        setError(createError || 'Failed to create world');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Navigate based on event timing
+      if (isPostEvent()) {
+        // Past event - go to photo review first
+        router.push({
+          pathname: '/review',
+          params: {
+            worldId: world.id,
+            worldName: trimmedName,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+          },
+        });
+      } else {
+        // Future/current event - go to invite screen
+        router.push({
+          pathname: '/invite',
+          params: {
+            worldId: world.id,
+            worldName: trimmedName,
+          },
+        });
+      }
+    } catch (e) {
+      console.error('Create world error:', e);
+      setError('Something went wrong. Please try again.');
+      setIsSubmitting(false);
     }
   };
 
@@ -157,6 +188,24 @@ export default function CreateScreen() {
             <Text style={styles.title}>New World</Text>
           </Animated.View>
 
+          {/* Cover Image Picker */}
+          <Animated.View
+            entering={FadeInUp.delay(50).duration(400)}
+            style={styles.coverSection}
+          >
+            <Text style={styles.label}>Cover (optional)</Text>
+            <ImagePicker
+              value={coverUri}
+              onChange={setCoverUri}
+              placeholder="Add cover photo"
+              icon="image-outline"
+              size="large"
+              shape="square"
+              aspect={[16, 9]}
+              disabled={isSubmitting}
+            />
+          </Animated.View>
+
           {/* Name Input */}
           <Animated.View
             entering={FadeInUp.delay(100).duration(400)}
@@ -172,6 +221,7 @@ export default function CreateScreen() {
               autoCapitalize="words"
               autoFocus
               returnKeyType="done"
+              editable={!isSubmitting}
             />
           </Animated.View>
 
@@ -181,7 +231,11 @@ export default function CreateScreen() {
             style={styles.inputSection}
           >
             <Text style={styles.label}>Dates</Text>
-            <Pressable style={styles.dateButton} onPress={openCalendar}>
+            <Pressable 
+              style={styles.dateButton} 
+              onPress={openCalendar}
+              disabled={isSubmitting}
+            >
               <Text style={styles.dateText}>{formatDateRange()}</Text>
               <Text style={styles.dateChevron}>›</Text>
             </Pressable>
@@ -190,6 +244,13 @@ export default function CreateScreen() {
             )}
           </Animated.View>
 
+          {/* Error Message */}
+          {error && (
+            <Animated.View entering={FadeIn} style={styles.errorContainer}>
+              <Text style={styles.errorText}>{error}</Text>
+            </Animated.View>
+          )}
+
           {/* CTA Button */}
           <Animated.View
             entering={FadeInUp.delay(300).duration(400)}
@@ -197,13 +258,13 @@ export default function CreateScreen() {
           >
             <Pressable
               onPress={handleCreateWorld}
-              disabled={!isValid}
+              disabled={!isValid || isSubmitting}
               style={({ pressed }) => [
                 styles.ctaButton,
-                pressed && isValid && styles.ctaButtonPressed,
+                pressed && isValid && !isSubmitting && styles.ctaButtonPressed,
               ]}
             >
-              {isValid ? (
+              {isValid && !isSubmitting ? (
                 <LinearGradient
                   colors={[Colors.accent, Colors.accentDark]}
                   start={{ x: 0, y: 0 }}
@@ -211,6 +272,15 @@ export default function CreateScreen() {
                   style={styles.ctaGradient}
                 >
                   <Text style={styles.ctaText}>{ctaLabel}</Text>
+                </LinearGradient>
+              ) : isSubmitting ? (
+                <LinearGradient
+                  colors={[Colors.accent, Colors.accentDark]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.ctaGradient}
+                >
+                  <ActivityIndicator size="small" color={Colors.textPrimary} />
                 </LinearGradient>
               ) : (
                 <View style={[styles.ctaGradient, styles.ctaDisabled]}>
@@ -255,6 +325,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: Spacing.xl,
+    paddingBottom: Spacing.xxl,
   },
 
   // Header
@@ -267,6 +338,11 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: '700',
     letterSpacing: -0.5,
+  },
+
+  // Cover Section
+  coverSection: {
+    marginBottom: Spacing.xl,
   },
 
   // Input Sections
@@ -306,6 +382,9 @@ const styles = StyleSheet.create({
     fontSize: 24,
     color: Colors.textMuted,
   },
+  errorContainer: {
+    marginBottom: Spacing.md,
+  },
   errorText: {
     color: Colors.error,
     fontSize: Typography.sizes.sm,
@@ -330,6 +409,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: Spacing.lg,
+    minHeight: 56,
   },
   ctaDisabled: {
     backgroundColor: Colors.surface,

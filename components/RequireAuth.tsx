@@ -1,5 +1,5 @@
 import React from 'react';
-import { Redirect } from 'expo-router';
+import { Redirect, type Href } from 'expo-router';
 
 import { useAuth } from '@/hooks/useAuth';
 
@@ -16,7 +16,7 @@ export function RequireAuth({ children }: RequireAuthProps) {
   }
 
   if (!session) {
-    return <Redirect href="/auth" />;
+    return <Redirect href={'/auth' as Href} />;
   }
 
   return <>{children}</>;

@@ -9,9 +9,11 @@
  */
 
 import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Dimensions,
   FlatList,
   Platform,
@@ -25,41 +27,90 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Avatar, MediaActions, MediaViewer } from '@/components';
 import { Colors, Spacing, Typography } from '@/constants/theme';
-import { CURRENT_USER, getWorldById } from '@/constants/mockData';
-import type { Photo } from '@/constants/mockData';
+import type { MediaWithOwner } from '@/lib/database.types';
 import { formatMediaDate } from '@/lib/media-utils';
+import { getWorldMedia, getMediaUrls } from '@/lib/api/media';
+import { useAuth } from '@/hooks/useAuth';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function MediaScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const { worldId, mediaId, initialIndex } = useLocalSearchParams<{
     worldId: string;
     mediaId: string;
     initialIndex?: string;
   }>();
 
-  // Get world data
-  const world = getWorldById(worldId);
-  const photos = world?.photos ?? [];
-  
   // State
+  const [mediaList, setMediaList] = useState<MediaWithOwner[]>([]);
+  const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState(
     initialIndex ? parseInt(initialIndex, 10) : 0
   );
   const [isZoomed, setIsZoomed] = useState(false);
   const [showActions, setShowActions] = useState(false);
-  const [mediaList, setMediaList] = useState(photos);
 
   // Refs
   const flatListRef = useRef<FlatList>(null);
 
+  // Fetch media on mount
+  useEffect(() => {
+    async function fetchMedia() {
+      if (!worldId) {
+        setError('No world ID provided');
+        setLoading(false);
+        return;
+      }
+
+      const result = await getWorldMedia(worldId);
+      
+      if (result.error) {
+        setError(result.error);
+        setLoading(false);
+        return;
+      }
+
+      if (result.data.length === 0) {
+        setError('No media found');
+        setLoading(false);
+        return;
+      }
+
+      setMediaList(result.data);
+
+      // Get signed URLs for all media
+      const storagePaths = result.data.map(m => m.storage_path);
+      const urlsResult = await getMediaUrls(storagePaths);
+      
+      if (urlsResult.data) {
+        setMediaUrls(urlsResult.data);
+      }
+
+      // Find initial index based on mediaId if provided
+      if (mediaId) {
+        const idx = result.data.findIndex(m => m.id === mediaId);
+        if (idx >= 0) {
+          setCurrentIndex(idx);
+        }
+      }
+
+      setLoading(false);
+    }
+
+    fetchMedia();
+  }, [worldId, mediaId]);
+
   // Current media
   const currentMedia = mediaList[currentIndex];
+  const currentMediaUrl = currentMedia ? mediaUrls[currentMedia.storage_path] : undefined;
 
   // Is current user the owner?
-  const isOwner = currentMedia?.owner.id === CURRENT_USER.id;
+  const isOwner = user && currentMedia?.owner_id === user.id;
 
   // Haptic feedback
   const triggerHaptic = useCallback((style = Haptics.ImpactFeedbackStyle.Light) => {
@@ -122,25 +173,46 @@ export default function MediaScreen() {
   }, []);
 
   // Get layout for FlatList
-  const getItemLayout = useCallback((_: any, index: number) => ({
+  const getItemLayout = useCallback((_: unknown, index: number) => ({
     length: SCREEN_WIDTH,
     offset: SCREEN_WIDTH * index,
     index,
   }), []);
 
   // Render media item
-  const renderItem = useCallback(({ item, index }: { item: Photo; index: number }) => (
-    <MediaViewer
-      media={item}
-      isActive={index === currentIndex}
-      onZoomChange={setIsZoomed}
-    />
-  ), [currentIndex]);
+  const renderItem = useCallback(({ item, index }: { item: MediaWithOwner; index: number }) => {
+    const url = mediaUrls[item.storage_path];
+    if (!url) {
+      return (
+        <View style={styles.loadingItem}>
+          <ActivityIndicator size="large" color={Colors.accent} />
+        </View>
+      );
+    }
+    return (
+      <MediaViewer
+        media={item}
+        uri={url}
+        isActive={index === currentIndex}
+        onZoomChange={setIsZoomed}
+      />
+    );
+  }, [currentIndex, mediaUrls]);
 
-  if (!world || mediaList.length === 0) {
+  // Loading state
+  if (loading) {
     return (
       <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>Media not found</Text>
+        <ActivityIndicator size="large" color={Colors.accent} />
+      </View>
+    );
+  }
+
+  // Error or empty state
+  if (error || mediaList.length === 0) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>{error || 'No media found'}</Text>
         <Pressable onPress={handleClose}>
           <Text style={styles.errorLink}>Go Back</Text>
         </Pressable>
@@ -158,10 +230,7 @@ export default function MediaScreen() {
         {/* Header - Always visible */}
         <View style={[styles.header, { top: insets.top + Spacing.md }]}>
           <Pressable onPress={handleClose} style={styles.closeButton}>
-            <View style={styles.closeIcon}>
-              <View style={styles.closeLine1} />
-              <View style={styles.closeLine2} />
-            </View>
+            <Ionicons name="close" size={22} color={Colors.textPrimary} />
           </Pressable>
 
           <Text style={styles.counter}>
@@ -169,11 +238,7 @@ export default function MediaScreen() {
           </Text>
 
           <Pressable onPress={handleActionsPress} style={styles.moreButton}>
-            <View style={styles.moreIcon}>
-              <View style={styles.moreDot} />
-              <View style={styles.moreDot} />
-              <View style={styles.moreDot} />
-            </View>
+            <Ionicons name="ellipsis-vertical" size={20} color={Colors.textPrimary} />
           </Pressable>
         </View>
 
@@ -199,14 +264,14 @@ export default function MediaScreen() {
           <View style={[styles.footer, { paddingBottom: insets.bottom + Spacing.lg }]}>
             <View style={styles.ownerInfo}>
               <Avatar
-                uri={currentMedia.owner.avatar}
+                uri={currentMedia.owner.avatar_url ?? undefined}
                 name={currentMedia.owner.name}
                 size="medium"
               />
               <View style={styles.ownerText}>
                 <Text style={styles.ownerName}>{currentMedia.owner.name}</Text>
                 <Text style={styles.timestamp}>
-                  {formatMediaDate(currentMedia.timestamp)}
+                  {formatMediaDate(new Date(currentMedia.taken_at ?? currentMedia.created_at))}
                 </Text>
               </View>
             </View>
@@ -215,13 +280,16 @@ export default function MediaScreen() {
       </View>
 
       {/* Actions sheet */}
-      <MediaActions
-        media={currentMedia}
-        isOwner={isOwner}
-        isOpen={showActions}
-        onClose={handleActionsClose}
-        onDelete={handleDelete}
-      />
+      {currentMedia && currentMediaUrl && (
+        <MediaActions
+          media={currentMedia}
+          uri={currentMediaUrl}
+          isOwner={!!isOwner}
+          isOpen={showActions}
+          onClose={handleActionsClose}
+          onDelete={handleDelete}
+        />
+      )}
     </View>
   );
 }
@@ -255,28 +323,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  closeIcon: {
-    width: 18,
-    height: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeLine1: {
-    position: 'absolute',
-    width: 18,
-    height: 2,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 1,
-    transform: [{ rotate: '45deg' }],
-  },
-  closeLine2: {
-    position: 'absolute',
-    width: 18,
-    height: 2,
-    backgroundColor: Colors.textPrimary,
-    borderRadius: 1,
-    transform: [{ rotate: '-45deg' }],
-  },
   counter: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.md,
@@ -289,16 +335,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.glass,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  moreIcon: {
-    flexDirection: 'column',
-    gap: 3,
-  },
-  moreDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.textPrimary,
   },
   footer: {
     position: 'absolute',
@@ -341,5 +377,12 @@ const styles = StyleSheet.create({
   errorLink: {
     color: Colors.accent,
     fontSize: Typography.sizes.md,
+  },
+  loadingItem: {
+    width: SCREEN_WIDTH,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.background,
   },
 });

@@ -140,7 +140,7 @@ export function WorldCard({
                     state === 'building' ? styles.stateDotBuilding : styles.stateDotActive
                   ]} />
                   <Text style={styles.stateText}>
-                    {state === 'building' ? 'Building' : 'Active'}
+                    {state === 'building' ? 'Collecting' : 'Live'}
                   </Text>
                 </View>
               )}

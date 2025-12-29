@@ -1,9 +1,9 @@
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import React, { useState, useRef } from 'react';
 import {
   Dimensions,
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -30,7 +30,9 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
+import { LegalModal } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
+import { useOnboarding } from '@/hooks/useOnboarding';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -105,6 +107,8 @@ export default function OnboardingScreen() {
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
+  const { markComplete } = useOnboarding();
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = event.nativeEvent.contentOffset.x;
@@ -131,18 +135,20 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleSkip = () => {
+  const handleSkip = async () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    router.replace('/auth');
+    await markComplete();
+    router.replace('/auth' as Href);
   };
 
-  const handleGetStarted = () => {
+  const handleGetStarted = async () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    router.replace('/auth');
+    await markComplete();
+    router.replace('/auth' as Href);
   };
 
   const isLastSlide = currentIndex === SLIDES.length - 1;
@@ -207,9 +213,23 @@ export default function OnboardingScreen() {
 
         {/* Terms */}
         <Text style={styles.termsText}>
-          By continuing, you agree to our Terms & Privacy Policy
+          By continuing, you agree to our{' '}
+          <Text style={styles.termsLink} onPress={() => setLegalModalType('terms')}>
+            Terms
+          </Text>
+          {' & '}
+          <Text style={styles.termsLink} onPress={() => setLegalModalType('privacy')}>
+            Privacy Policy
+          </Text>
         </Text>
       </View>
+
+      {/* Legal Modal */}
+      <LegalModal
+        visible={legalModalType !== null}
+        type={legalModalType || 'terms'}
+        onClose={() => setLegalModalType(null)}
+      />
     </View>
   );
 }
@@ -247,16 +267,16 @@ function SlideView({ slide, isActive }: SlideViewProps) {
 
 // Visual: Scattered photos (problem)
 function ScatteredVisual() {
-  const photos = [
-    { uri: 'https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=300', rotation: -12, x: -60, y: -40 },
-    { uri: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?w=300', rotation: 8, x: 50, y: -60 },
-    { uri: 'https://images.unsplash.com/photo-1536098561742-ca998e48cbcc?w=300', rotation: -5, x: -40, y: 50 },
-    { uri: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=300', rotation: 15, x: 60, y: 40 },
+  const cards = [
+    { gradient: ['#4A1A6B', '#2D1B4E'] as const, rotation: -12, x: -60, y: -40 },
+    { gradient: ['#1A3A5C', '#0F2744'] as const, rotation: 8, x: 50, y: -60 },
+    { gradient: ['#3D2B1F', '#261A12'] as const, rotation: -5, x: -40, y: 50 },
+    { gradient: ['#1F3D3D', '#122626'] as const, rotation: 15, x: 60, y: 40 },
   ];
 
   return (
     <View style={styles.scatteredContainer}>
-      {photos.map((photo, index) => (
+      {cards.map((card, index) => (
         <Animated.View
           key={index}
           entering={FadeInUp.delay(index * 100).springify()}
@@ -264,15 +284,24 @@ function ScatteredVisual() {
             styles.scatteredPhoto,
             {
               transform: [
-                { rotate: `${photo.rotation}deg` },
-                { translateX: photo.x },
-                { translateY: photo.y },
+                { rotate: `${card.rotation}deg` },
+                { translateX: card.x },
+                { translateY: card.y },
               ],
               zIndex: index,
             }
           ]}
         >
-          <Image source={{ uri: photo.uri }} style={styles.scatteredImage} />
+          <LinearGradient
+            colors={[card.gradient[0], card.gradient[1]]}
+            style={styles.scatteredImage}
+          >
+            {/* Abstract photo icon */}
+            <View style={styles.photoIcon}>
+              <View style={styles.photoIconMountain} />
+              <View style={styles.photoIconSun} />
+            </View>
+          </LinearGradient>
           {/* Phone indicator */}
           <View style={styles.phoneIndicator}>
             <View style={styles.phoneDot} />
@@ -280,43 +309,43 @@ function ScatteredVisual() {
         </Animated.View>
       ))}
       {/* Question marks */}
-      <Animated.Text
+      <Animated.View
         entering={FadeIn.delay(500)}
         style={[styles.questionMark, { top: 20, left: 30 }]}
       >
-        ?
-      </Animated.Text>
-      <Animated.Text
+        <Ionicons name="help" size={32} color={Colors.textMuted} style={{ opacity: 0.3 }} />
+      </Animated.View>
+      <Animated.View
         entering={FadeIn.delay(600)}
         style={[styles.questionMark, { bottom: 40, right: 40 }]}
       >
-        ?
-      </Animated.Text>
+        <Ionicons name="help" size={32} color={Colors.textMuted} style={{ opacity: 0.3 }} />
+      </Animated.View>
     </View>
   );
 }
 
 // Visual: Collecting animation (solution)
 function CollectingVisual() {
-  const photos = [
-    'https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=300',
-    'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?w=300',
-    'https://images.unsplash.com/photo-1536098561742-ca998e48cbcc?w=300',
-    'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=300',
+  const cardGradients = [
+    ['#FF573D', '#CC3D2A'] as const,
+    ['#8B5CF6', '#6D43D4'] as const,
+    ['#06B6D4', '#0891A8'] as const,
+    ['#10B981', '#0A8C62'] as const,
   ];
 
   return (
     <View style={styles.collectingContainer}>
       {/* Center card stack */}
       <View style={styles.cardStack}>
-        {photos.map((uri, index) => (
+        {cardGradients.map((gradient, index) => (
           <Animated.View
             key={index}
             entering={FadeInDown.delay(200 + index * 150).springify()}
             style={[
               styles.stackCard,
               {
-                zIndex: photos.length - index,
+                zIndex: cardGradients.length - index,
                 transform: [
                   { scale: 1 - index * 0.05 },
                   { translateY: index * -8 },
@@ -324,23 +353,32 @@ function CollectingVisual() {
               }
             ]}
           >
-            <Image source={{ uri }} style={styles.stackImage} />
+            <LinearGradient
+              colors={[gradient[0], gradient[1]]}
+              style={styles.stackImage}
+            >
+              {/* Camera icon */}
+              <View style={styles.cameraIcon}>
+                <View style={styles.cameraBody} />
+                <View style={styles.cameraLens} />
+              </View>
+            </LinearGradient>
           </Animated.View>
         ))}
       </View>
       {/* Magic sparkles */}
-      <Animated.Text
+      <Animated.View
         entering={FadeIn.delay(800)}
         style={[styles.sparkle, { top: 40, right: 60 }]}
       >
-        ✨
-      </Animated.Text>
-      <Animated.Text
+        <Ionicons name="sparkles" size={24} color={Colors.accent} />
+      </Animated.View>
+      <Animated.View
         entering={FadeIn.delay(900)}
         style={[styles.sparkle, { bottom: 60, left: 50 }]}
       >
-        ✨
-      </Animated.Text>
+        <Ionicons name="sparkles" size={24} color={Colors.accent} />
+      </Animated.View>
     </View>
   );
 }
@@ -353,8 +391,10 @@ function WorldVisual() {
         entering={FadeInUp.delay(200).springify()}
         style={styles.worldCard}
       >
-        <Image
-          source={{ uri: 'https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?w=600' }}
+        <LinearGradient
+          colors={['#8B5CF6', '#4A1A6B', '#1A0A2E']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
           style={styles.worldCardImage}
         />
         <LinearGradient
@@ -388,8 +428,10 @@ function ReliveVisual() {
         entering={FadeInUp.delay(200).springify()}
         style={styles.relivePhone}
       >
-        <Image
-          source={{ uri: 'https://images.unsplash.com/photo-1545569341-9eb8b30979d9?w=400' }}
+        <LinearGradient
+          colors={['#FF573D', '#CC3D2A', '#8B2A1D']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
           style={styles.reliveImage}
         />
         {/* Play button overlay */}
@@ -548,6 +590,10 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.xs,
     textAlign: 'center',
   },
+  termsLink: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    textDecorationLine: 'underline',
+  },
 
   // Scattered Visual
   scatteredContainer: {
@@ -587,10 +633,30 @@ const styles = StyleSheet.create({
   },
   questionMark: {
     position: 'absolute',
-    color: Colors.textMuted,
-    fontSize: 32,
-    fontWeight: '700',
-    opacity: 0.3,
+  },
+  photoIcon: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoIconMountain: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 20,
+    borderRightWidth: 20,
+    borderBottomWidth: 24,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'rgba(255,255,255,0.3)',
+  },
+  photoIconSun: {
+    position: 'absolute',
+    top: 40,
+    right: 30,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.3)',
   },
 
   // Collecting Visual
@@ -616,10 +682,28 @@ const styles = StyleSheet.create({
   stackImage: {
     width: '100%',
     height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cameraIcon: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cameraBody: {
+    width: 40,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+  },
+  cameraLens: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(255,255,255,0.5)',
   },
   sparkle: {
     position: 'absolute',
-    fontSize: 24,
   },
 
   // World Visual

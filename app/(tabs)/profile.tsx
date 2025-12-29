@@ -1,10 +1,10 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import * as Linking from 'expo-linking';
+import { useFocusEffect, useRouter, type Href } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
   Image,
-  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,10 +14,12 @@ import {
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { SettingsRow, SettingsSection, SignOutSheet } from '@/components';
-import { CURRENT_USER, MOCK_WORLDS } from '@/constants/mockData';
+import { LegalModal, SettingsRow, SettingsSection, SignOutSheet, StorageUsage } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
+import { getMyWorlds } from '@/lib/api';
+import { getStorageInfo } from '@/lib/database.types';
+import type { StorageInfo } from '@/lib/database.types';
 
 // TODO: Get from subscription state (RevenueCat/Superwall)
 const IS_PREMIUM = false;
@@ -37,13 +39,50 @@ const SUBSCRIPTION_STATUS = IS_PREMIUM ? 'Worlding+' : 'Free';
 export default function ProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { signOut, user } = useAuth();
+  const { signOut, user, profile, profileLoading } = useAuth();
 
   const [showSignOutSheet, setShowSignOutSheet] = useState(false);
+  const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
+  const [stats, setStats] = useState({ worldCount: 0, photoCount: 0 });
+  const [statsLoading, setStatsLoading] = useState(true);
 
-  const totalPhotos = MOCK_WORLDS.reduce((sum, w) => sum + w.photoCount, 0);
-  const firstName = CURRENT_USER.name.split(' ')[0];
-  const userEmail = user?.email || 'alex@example.com';
+  // Derive display values from profile
+  const displayName = profile?.name ?? 'User';
+  const firstName = displayName.split(' ')[0];
+  const avatarUrl = profile?.avatar_url ?? null;
+  const userEmail = user?.email ?? '';
+  const storageInfo: StorageInfo | null = profile ? getStorageInfo(profile) : null;
+
+  // Fetch stats when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+
+      async function loadStats() {
+        setStatsLoading(true);
+        const { data: worlds } = await getMyWorlds();
+
+        if (isMounted) {
+          setStats({
+            worldCount: worlds.length,
+            photoCount: worlds.reduce((sum, w) => sum + w.media_count, 0),
+          });
+          setStatsLoading(false);
+        }
+      }
+
+      loadStats();
+
+      return () => {
+        isMounted = false;
+      };
+    }, [])
+  );
+
+  // Simple skeleton box component
+  const SkeletonBox = ({ width, height }: { width: number; height: number }) => (
+    <View style={[styles.skeletonBox, { width, height }]} />
+  );
 
   const handleUpgrade = () => {
     router.push('/paywall');
@@ -52,7 +91,7 @@ export default function ProfileScreen() {
   const handleSignOut = async () => {
     setShowSignOutSheet(false);
     await signOut();
-    router.replace('/auth');
+    router.replace('/auth' as Href);
   };
 
   const handleEditProfile = () => {
@@ -78,8 +117,8 @@ export default function ProfileScreen() {
         <Animated.View entering={FadeIn.duration(400)} style={styles.header}>
           {/* Avatar with Edit Badge */}
           <Pressable onPress={handleAvatarPress} style={styles.avatarContainer}>
-            {CURRENT_USER.avatar ? (
-              <Image source={{ uri: CURRENT_USER.avatar }} style={styles.avatar} />
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
             ) : (
               <LinearGradient
                 colors={[Colors.accent, Colors.accentDark]}
@@ -88,22 +127,26 @@ export default function ProfileScreen() {
                 <Text style={styles.avatarText}>{firstName.slice(0, 1)}</Text>
               </LinearGradient>
             )}
-            {/* Edit Badge */}
-            <View style={styles.editBadge}>
-              <FontAwesome name="pencil" size={10} color={Colors.textPrimary} />
-            </View>
           </Pressable>
 
           {/* Name */}
-          <Text style={styles.userName}>{CURRENT_USER.name}</Text>
+          {profileLoading ? (
+            <SkeletonBox width={120} height={24} />
+          ) : (
+            <Text style={styles.userName}>{displayName}</Text>
+          )}
 
           {/* Email */}
           <Text style={styles.userEmail}>{userEmail}</Text>
 
           {/* Stats */}
-          <Text style={styles.stats}>
-            {MOCK_WORLDS.length} Worlds · {totalPhotos} photos
-          </Text>
+          {statsLoading ? (
+            <SkeletonBox width={140} height={16} />
+          ) : (
+            <Text style={styles.stats}>
+              {stats.worldCount} Worlds · {stats.photoCount} photos
+            </Text>
+          )}
         </Animated.View>
 
         {/* Premium Banner */}
@@ -119,13 +162,13 @@ export default function ProfileScreen() {
               style={styles.premiumBanner}
             >
               <View style={styles.premiumIcon}>
-                <FontAwesome name="star" size={16} color={Colors.accent} />
+                <Ionicons name="star" size={16} color={Colors.accent} />
               </View>
               <View style={styles.premiumContent}>
                 <Text style={styles.premiumTitle}>Worlding+</Text>
                 <Text style={styles.premiumSubtitle}>Unlock unlimited Worlds</Text>
               </View>
-              <FontAwesome name="chevron-right" size={14} color={Colors.accent} />
+              <Ionicons name="chevron-forward" size={16} color={Colors.accent} />
             </LinearGradient>
           </Pressable>
         </Animated.View>
@@ -137,20 +180,25 @@ export default function ProfileScreen() {
         >
           <SettingsSection title="Account">
             <SettingsRow
-              icon="user"
+              icon="person-outline"
               label="Edit Profile"
               onPress={handleEditProfile}
             />
             <SettingsRow
-              icon="bell"
+              icon="notifications-outline"
               label="Notifications"
               onPress={() => router.push('/settings/notifications')}
             />
             <SettingsRow
-              icon="lock"
+              icon="lock-closed-outline"
               label="Privacy"
               onPress={() => router.push('/settings/privacy')}
             />
+            {storageInfo && (
+              <View style={styles.storageContainer}>
+                <StorageUsage storage={storageInfo} compact />
+              </View>
+            )}
           </SettingsSection>
         </Animated.View>
 
@@ -161,14 +209,14 @@ export default function ProfileScreen() {
         >
           <SettingsSection title="Subscription">
             <SettingsRow
-              icon="credit-card"
+              icon="card-outline"
               label="Current Plan"
               value={SUBSCRIPTION_STATUS}
               showChevron={false}
             />
             {IS_PREMIUM ? (
               <SettingsRow
-                icon="cog"
+                icon="settings-outline"
                 label="Manage Subscription"
                 onPress={() => {
                   // TODO: Open subscription management
@@ -177,7 +225,7 @@ export default function ProfileScreen() {
               />
             ) : null}
             <SettingsRow
-              icon="refresh"
+              icon="refresh-outline"
               label="Restore Purchases"
               onPress={() => {
                 // TODO: Implement restore purchases via RevenueCat
@@ -194,17 +242,17 @@ export default function ProfileScreen() {
         >
           <SettingsSection title="Support">
             <SettingsRow
-              icon="question-circle"
+              icon="help-circle-outline"
               label="Help Center"
               onPress={() => openURL('https://worlding.app/help')}
             />
             <SettingsRow
-              icon="envelope"
+              icon="mail-outline"
               label="Contact Us"
-              onPress={() => openURL('mailto:support@worlding.app')}
+              onPress={() => openURL('mailto:contact@worlding.fun')}
             />
             <SettingsRow
-              icon="star-o"
+              icon="star-outline"
               label="Rate Worlding"
               onPress={() => {
                 // TODO: Open app store rating
@@ -221,7 +269,7 @@ export default function ProfileScreen() {
         >
           <SettingsSection>
             <SettingsRow
-              icon="sign-out"
+              icon="log-out-outline"
               label="Sign Out"
               destructive
               showChevron={false}
@@ -237,11 +285,11 @@ export default function ProfileScreen() {
         >
           <Text style={styles.version}>Version 1.0.0</Text>
           <View style={styles.footerLinks}>
-            <Pressable onPress={() => openURL('https://worlding.app/terms')}>
+            <Pressable onPress={() => setLegalModalType('terms')}>
               <Text style={styles.footerLink}>Terms</Text>
             </Pressable>
             <Text style={styles.footerDot}>·</Text>
-            <Pressable onPress={() => openURL('https://worlding.app/privacy')}>
+            <Pressable onPress={() => setLegalModalType('privacy')}>
               <Text style={styles.footerLink}>Privacy</Text>
             </Pressable>
           </View>
@@ -255,6 +303,15 @@ export default function ProfileScreen() {
         onConfirm={handleSignOut}
         userEmail={userEmail}
       />
+
+      {/* Legal Modal */}
+      {legalModalType && (
+        <LegalModal
+          visible={true}
+          type={legalModalType}
+          onClose={() => setLegalModalType(null)}
+        />
+      )}
     </View>
   );
 }
@@ -295,19 +352,6 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.xxl,
     fontWeight: '600',
   },
-  editBadge: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: Colors.surface,
-    borderWidth: 2,
-    borderColor: Colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   userName: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.xl,
@@ -322,6 +366,11 @@ const styles = StyleSheet.create({
   stats: {
     color: Colors.textMuted,
     fontSize: Typography.sizes.sm,
+  },
+  skeletonBox: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.sm,
+    marginBottom: Spacing.xs,
   },
 
   // Premium Banner
@@ -364,6 +413,12 @@ const styles = StyleSheet.create({
   // Settings
   settingsContainer: {
     paddingHorizontal: Spacing.lg,
+  },
+  storageContainer: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
   },
 
   // Footer

@@ -1,14 +1,82 @@
 /**
  * Media Utilities
  * 
- * Helper functions for downloading, saving, and sharing media files.
+ * Helper functions for downloading, saving, sharing, and compressing media files.
  */
 
 import { File, Paths } from 'expo-file-system';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 
-import type { Photo } from '@/constants/mockData';
+import type { Media, MediaType } from '@/lib/database.types';
+
+// ============================================================================
+// COMPRESSION CONSTANTS
+// ============================================================================
+
+/** Maximum dimension (width or height) for compressed images */
+export const MAX_IMAGE_DIMENSION = 1920;
+
+/** JPEG compression quality (0.0 - 1.0) */
+export const IMAGE_COMPRESSION_QUALITY = 0.8;
+
+// ============================================================================
+// COMPRESSION UTILITIES
+// ============================================================================
+
+export interface CompressionResult {
+  uri: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Compress an image by resizing and reducing quality
+ * 
+ * @param uri - Local file URI of the image
+ * @param width - Original width of the image
+ * @param height - Original height of the image
+ * @returns Compressed image URI with new dimensions
+ */
+export async function compressImage(
+  uri: string,
+  width: number,
+  height: number
+): Promise<CompressionResult> {
+  const actions: Array<{ resize: { width?: number; height?: number } }> = [];
+  
+  let newWidth = width;
+  let newHeight = height;
+
+  // Resize if either dimension exceeds max
+  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+    const scale = MAX_IMAGE_DIMENSION / Math.max(width, height);
+    newWidth = Math.round(width * scale);
+    newHeight = Math.round(height * scale);
+    
+    // Resize maintaining aspect ratio (only specify width, height auto-calculated)
+    actions.push({ resize: { width: newWidth } });
+  }
+
+  const result = await manipulateAsync(uri, actions, {
+    compress: IMAGE_COMPRESSION_QUALITY,
+    format: SaveFormat.JPEG,
+  });
+
+  return {
+    uri: result.uri,
+    width: result.width,
+    height: result.height,
+  };
+}
+
+/**
+ * Check if an image needs compression based on dimensions
+ */
+export function needsCompression(width: number, height: number): boolean {
+  return width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION;
+}
 
 /**
  * Format duration in seconds to MM:SS or HH:MM:SS
@@ -50,9 +118,9 @@ export function formatMediaDate(date: Date): string {
 /**
  * Get filename from media object
  */
-export function getMediaFilename(media: Photo): string {
-  const extension = media.type === 'video' ? 'mp4' : 'jpg';
-  return `worlding_${media.id}.${extension}`;
+export function getMediaFilename(mediaId: string, type: MediaType): string {
+  const extension = type === 'video' ? 'mp4' : 'jpg';
+  return `worlding_${mediaId}.${extension}`;
 }
 
 /**
@@ -88,9 +156,14 @@ export async function downloadMedia(
 
 /**
  * Save media to camera roll
+ * @param uri - Pre-resolved signed URL for the media
+ * @param mediaId - Media ID for filename generation
+ * @param type - Media type (image or video)
  */
 export async function saveMediaToCameraRoll(
-  media: Photo
+  uri: string,
+  mediaId: string,
+  type: MediaType
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // Request permissions
@@ -101,8 +174,8 @@ export async function saveMediaToCameraRoll(
     }
 
     // Download file first if it's a remote URL
-    const filename = getMediaFilename(media);
-    const file = await downloadMedia(media.uri, filename);
+    const filename = getMediaFilename(mediaId, type);
+    const file = await downloadMedia(uri, filename);
     
     if (!file) {
       return { success: false, error: 'Download failed' };
@@ -133,9 +206,14 @@ export async function saveMediaToCameraRoll(
 
 /**
  * Share media using native share sheet
+ * @param uri - Pre-resolved signed URL for the media
+ * @param mediaId - Media ID for filename generation
+ * @param type - Media type (image or video)
  */
 export async function shareMedia(
-  media: Photo
+  uri: string,
+  mediaId: string,
+  type: MediaType
 ): Promise<{ success: boolean; error?: string }> {
   try {
     // Check if sharing is available
@@ -146,8 +224,8 @@ export async function shareMedia(
     }
 
     // Download file first if it's a remote URL
-    const filename = getMediaFilename(media);
-    const file = await downloadMedia(media.uri, filename);
+    const filename = getMediaFilename(mediaId, type);
+    const file = await downloadMedia(uri, filename);
     
     if (!file) {
       return { success: false, error: 'Download failed' };
@@ -155,7 +233,7 @@ export async function shareMedia(
 
     // Share the file
     await Sharing.shareAsync(file.uri, {
-      mimeType: media.type === 'video' ? 'video/mp4' : 'image/jpeg',
+      mimeType: type === 'video' ? 'video/mp4' : 'image/jpeg',
       dialogTitle: 'Share from Worlding',
     });
 
@@ -181,22 +259,20 @@ export async function shareMedia(
 /**
  * Check if user is the owner of the media
  */
-export function isMediaOwner(media: Photo, currentUserId: string): boolean {
-  return media.owner.id === currentUserId;
+export function isMediaOwner(media: Media, currentUserId: string): boolean {
+  return media.owner_id === currentUserId;
 }
 
 /**
- * Delete media (mock implementation - returns success)
- * In production, this would call the backend API
+ * Delete media - This function is now deprecated.
+ * Use deleteMedia from @/lib/api/media instead for real Supabase deletion.
+ * @deprecated Use deleteMedia from @/lib/api/media instead
  */
-export async function deleteMedia(
-  media: Photo
+export async function deleteMediaLocal(
+  mediaId: string
 ): Promise<{ success: boolean; error?: string }> {
-  // Simulate API call delay
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // Mock: always succeed
-  // In production, this would call Supabase or your backend
-  console.log('Deleted media:', media.id);
+  // This is kept for backwards compatibility but should not be used
+  console.warn('deleteMediaLocal is deprecated. Use deleteMedia from @/lib/api/media instead.');
+  console.log('Deleted media:', mediaId);
   return { success: true };
 }

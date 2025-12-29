@@ -1,8 +1,10 @@
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
+import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
+  ActivityIndicator,
   Platform,
   Pressable,
   Share,
@@ -14,6 +16,7 @@ import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { createInviteCode, getInviteUrl, getTimeRemaining } from '@/lib/api/invites';
 
 /**
  * Invite Screen
@@ -29,12 +32,45 @@ export default function InviteScreen() {
   }>();
 
   const [copied, setCopied] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock invite link - will be real when backend is connected
-  const inviteCode = 'ABC123';
-  const inviteLink = `https://worlding.app/join/${inviteCode}`;
+  // Generate invite code on mount
+  const generateInviteCode = useCallback(async () => {
+    if (!params.worldId) {
+      setError('Invalid world');
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    const { data, error: codeError } = await createInviteCode(params.worldId);
+
+    if (codeError || !data) {
+      setError(codeError || 'Failed to generate invite code');
+      setIsLoading(false);
+      return;
+    }
+
+    setInviteCode(data.code);
+    setExpiresAt(data.expires_at);
+    setIsLoading(false);
+  }, [params.worldId]);
+
+  useEffect(() => {
+    generateInviteCode();
+  }, [generateInviteCode]);
+
+  const inviteLink = inviteCode ? getInviteUrl(inviteCode) : '';
+  const timeRemaining = expiresAt ? getTimeRemaining(expiresAt) : '';
 
   const handleCopyLink = async () => {
+    if (!inviteLink) return;
+
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -45,18 +81,33 @@ export default function InviteScreen() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCopyCode = async () => {
+    if (!inviteCode) return;
+
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+
+    await Clipboard.setStringAsync(inviteCode);
+    setCopied(true);
+
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const handleShare = async () => {
+    if (!inviteLink) return;
+
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
 
     try {
       await Share.share({
-        message: `Join my World "${params.worldName}" on Worlding!\n\n${inviteLink}`,
+        message: `Join my World "${params.worldName}" on Worlding!\n\nUse code: ${inviteCode}\n\n${inviteLink}`,
         url: inviteLink, // iOS only
       });
-    } catch (error) {
-      console.error('Share error:', error);
+    } catch (shareError) {
+      console.error('Share error:', shareError);
     }
   };
 
@@ -79,19 +130,32 @@ export default function InviteScreen() {
     router.replace('/(tabs)');
   };
 
+  const handleScanQR = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    router.push('/scan');
+  };
+
+  const handleRetry = () => {
+    generateInviteCode();
+  };
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={handleSkip} hitSlop={12}>
-          <Text style={styles.skipText}>Skip</Text>
+          <Text style={styles.skipText}>Invite later</Text>
         </Pressable>
       </View>
 
       {/* Content */}
       <View style={styles.content}>
         <Animated.View entering={FadeIn.duration(400)} style={styles.iconContainer}>
-          <Text style={styles.icon}>🎉</Text>
+          <View style={styles.iconBackground}>
+            <Ionicons name="gift" size={40} color={Colors.accent} />
+          </View>
         </Animated.View>
 
         <Animated.Text
@@ -108,66 +172,123 @@ export default function InviteScreen() {
           Invite friends to share their photos
         </Animated.Text>
 
-        {/* Invite Link Box */}
-        <Animated.View
-          entering={FadeInUp.delay(300).duration(400)}
-          style={styles.linkBox}
-        >
-          <Text style={styles.linkLabel}>Invite Link</Text>
-          <View style={styles.linkRow}>
-            <Text style={styles.linkText} numberOfLines={1}>
-              {inviteLink}
-            </Text>
-            <Pressable
-              onPress={handleCopyLink}
-              style={styles.copyButton}
-              hitSlop={8}
-            >
-              <Text style={styles.copyButtonText}>
-                {copied ? 'Copied!' : 'Copy'}
-              </Text>
-            </Pressable>
+        {/* Loading State */}
+        {isLoading && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color={Colors.accent} />
+            <Text style={styles.loadingText}>Generating invite code...</Text>
           </View>
-        </Animated.View>
+        )}
 
-        {/* Share Button */}
-        <Animated.View
-          entering={FadeInUp.delay(400).duration(400)}
-          style={styles.shareContainer}
-        >
-          <Pressable
-            onPress={handleShare}
-            style={({ pressed }) => [
-              styles.shareButton,
-              pressed && styles.shareButtonPressed,
-            ]}
-          >
-            <Text style={styles.shareButtonText}>Share Invite</Text>
-          </Pressable>
-        </Animated.View>
+        {/* Error State */}
+        {error && !isLoading && (
+          <Animated.View entering={FadeIn} style={styles.errorContainer}>
+            <Text style={styles.errorText}>{error}</Text>
+            <Pressable onPress={handleRetry} style={styles.retryButton}>
+              <Text style={styles.retryButtonText}>Try Again</Text>
+            </Pressable>
+          </Animated.View>
+        )}
 
-        {/* Or divider */}
-        <Animated.View
-          entering={FadeInUp.delay(500).duration(400)}
-          style={styles.dividerRow}
-        >
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
-          <View style={styles.dividerLine} />
-        </Animated.View>
+        {/* Invite Code Content */}
+        {inviteCode && !isLoading && (
+          <>
+            {/* Invite Code Box */}
+            <Animated.View
+              entering={FadeInUp.delay(300).duration(400)}
+              style={styles.codeBox}
+            >
+              <Text style={styles.codeLabel}>Invite Code</Text>
+              <Pressable onPress={handleCopyCode} style={styles.codeRow}>
+                <Text style={styles.codeText}>{inviteCode}</Text>
+                <Ionicons
+                  name={copied ? 'checkmark' : 'copy-outline'}
+                  size={20}
+                  color={copied ? Colors.success : Colors.textSecondary}
+                />
+              </Pressable>
+              <Text style={styles.expiryText}>{timeRemaining}</Text>
+            </Animated.View>
 
-        {/* Done Button */}
-        <Animated.View entering={FadeInUp.delay(600).duration(400)}>
-          <Pressable
-            onPress={handleDone}
-            style={({ pressed }) => [
-              styles.doneButton,
-              pressed && styles.doneButtonPressed,
-            ]}
-          >
-            <Text style={styles.doneButtonText}>Go to World</Text>
-          </Pressable>
-        </Animated.View>
+            {/* Invite Link Box */}
+            <Animated.View
+              entering={FadeInUp.delay(350).duration(400)}
+              style={styles.linkBox}
+            >
+              <Text style={styles.linkLabel}>Invite Link</Text>
+              <View style={styles.linkRow}>
+                <Text style={styles.linkText} numberOfLines={1}>
+                  {inviteLink}
+                </Text>
+                <Pressable
+                  onPress={handleCopyLink}
+                  style={styles.copyButton}
+                  hitSlop={8}
+                >
+                  <Text style={styles.copyButtonText}>
+                    {copied ? 'Copied!' : 'Copy'}
+                  </Text>
+                </Pressable>
+              </View>
+            </Animated.View>
+
+            {/* Share Button */}
+            <Animated.View
+              entering={FadeInUp.delay(400).duration(400)}
+              style={styles.shareContainer}
+            >
+              <Pressable
+                onPress={handleShare}
+                style={({ pressed }) => [
+                  styles.shareButton,
+                  pressed && styles.shareButtonPressed,
+                ]}
+              >
+                <Text style={styles.shareButtonText}>Share Invite</Text>
+              </Pressable>
+            </Animated.View>
+
+            {/* Scan QR Button */}
+            <Animated.View
+              entering={FadeInUp.delay(450).duration(400)}
+              style={styles.scanContainer}
+            >
+              <Pressable
+                onPress={handleScanQR}
+                style={({ pressed }) => [
+                  styles.scanButton,
+                  pressed && styles.scanButtonPressed,
+                ]}
+              >
+                <Ionicons name="qr-code-outline" size={20} color={Colors.textPrimary} />
+                <Text style={styles.scanButtonText}>Scan QR Code</Text>
+              </Pressable>
+            </Animated.View>
+
+            {/* Or divider */}
+            <Animated.View
+              entering={FadeInUp.delay(500).duration(400)}
+              style={styles.dividerRow}
+            >
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>or</Text>
+              <View style={styles.dividerLine} />
+            </Animated.View>
+
+            {/* Done Button */}
+            <Animated.View entering={FadeInUp.delay(600).duration(400)}>
+              <Pressable
+                onPress={handleDone}
+                style={({ pressed }) => [
+                  styles.doneButton,
+                  pressed && styles.doneButtonPressed,
+                ]}
+              >
+                <Text style={styles.doneButtonText}>Go to World</Text>
+              </Pressable>
+            </Animated.View>
+          </>
+        )}
       </View>
 
       {/* Footer hint */}
@@ -207,8 +328,13 @@ const styles = StyleSheet.create({
   iconContainer: {
     marginBottom: Spacing.lg,
   },
-  icon: {
-    fontSize: 64,
+  iconBackground: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: Colors.glass,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   title: {
     color: Colors.textPrimary,
@@ -222,6 +348,66 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.md,
     textAlign: 'center',
     marginBottom: Spacing.xxl,
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  loadingText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.md,
+  },
+  errorContainer: {
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  errorText: {
+    color: Colors.error,
+    fontSize: Typography.sizes.md,
+    textAlign: 'center',
+  },
+  retryButton: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.md,
+  },
+  retryButtonText: {
+    color: Colors.accent,
+    fontSize: Typography.sizes.md,
+    fontWeight: '600',
+  },
+  codeBox: {
+    width: '100%',
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+    alignItems: 'center',
+  },
+  codeLabel: {
+    color: Colors.textMuted,
+    fontSize: Typography.sizes.xs,
+    fontWeight: '500',
+    marginBottom: Spacing.sm,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  codeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  codeText: {
+    color: Colors.textPrimary,
+    fontSize: 32,
+    fontWeight: '700',
+    letterSpacing: 4,
+  },
+  expiryText: {
+    color: Colors.textMuted,
+    fontSize: Typography.sizes.sm,
+    marginTop: Spacing.sm,
   },
   linkBox: {
     width: '100%',
@@ -276,6 +462,29 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: Typography.sizes.lg,
     fontWeight: '600',
+  },
+  scanContainer: {
+    width: '100%',
+    marginBottom: Spacing.lg,
+  },
+  scanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.glass,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    paddingVertical: Spacing.md,
+  },
+  scanButtonPressed: {
+    opacity: 0.8,
+  },
+  scanButtonText: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.md,
+    fontWeight: '500',
   },
   dividerRow: {
     flexDirection: 'row',

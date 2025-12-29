@@ -12,9 +12,12 @@ import Animated, {
 
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 
+type ToastType = 'success' | 'error';
+
 interface ToastProps {
   message: string;
   visible: boolean;
+  type?: ToastType;
   duration?: number;
   onHide?: () => void;
   icon?: string;
@@ -32,12 +35,16 @@ interface ToastProps {
 export function Toast({
   message,
   visible,
+  type = 'success',
   duration = 2000,
   onHide,
-  icon = '✓',
+  icon,
 }: ToastProps) {
   const translateY = useSharedValue(100);
   const opacity = useSharedValue(0);
+
+  const displayIcon = icon ?? (type === 'success' ? '✓' : '✕');
+  const iconColor = type === 'success' ? Colors.success : Colors.error;
 
   useEffect(() => {
     if (visible) {
@@ -69,13 +76,14 @@ export function Toast({
     opacity: opacity.value,
   }));
 
-  if (!visible) return null;
-
   return (
-    <Animated.View style={[styles.container, animatedStyle]}>
+    <Animated.View 
+      style={[styles.container, animatedStyle]}
+      pointerEvents={visible ? 'auto' : 'none'}
+    >
       <View style={styles.toast}>
-        <View style={styles.iconContainer}>
-          <Text style={styles.icon}>{icon}</Text>
+        <View style={[styles.iconContainer, { backgroundColor: iconColor }]}>
+          <Text style={styles.icon}>{displayIcon}</Text>
         </View>
         <Text style={styles.message} numberOfLines={2}>
           {message}
@@ -110,7 +118,6 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.success,
     justifyContent: 'center',
     alignItems: 'center',
   },

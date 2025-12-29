@@ -1,4 +1,4 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -41,7 +41,7 @@ export default function NotificationsScreen() {
       {/* Header */}
       <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
         <Pressable style={styles.backButton} onPress={() => router.back()}>
-          <FontAwesome name="chevron-left" size={18} color={Colors.textPrimary} />
+          <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </Pressable>
 
         <Text style={styles.headerTitle}>Notifications</Text>
@@ -61,7 +61,7 @@ export default function NotificationsScreen() {
             footer="Control which notifications appear on your device."
           >
             <SettingsToggle
-              icon="bell"
+              icon="notifications-outline"
               label="Enable Push Notifications"
               value={pushEnabled}
               onValueChange={setPushEnabled}
@@ -73,7 +73,7 @@ export default function NotificationsScreen() {
         <Animated.View entering={FadeInUp.delay(200).duration(400)}>
           <SettingsSection title="Activity">
             <SettingsToggle
-              icon="image"
+              icon="image-outline"
               label="New Photos"
               description="When someone adds photos to your World"
               value={newPhotos}
@@ -81,7 +81,7 @@ export default function NotificationsScreen() {
               disabled={!pushEnabled}
             />
             <SettingsToggle
-              icon="users"
+              icon="people-outline"
               label="World Invites"
               description="When you're invited to a World"
               value={worldInvites}
@@ -90,7 +90,7 @@ export default function NotificationsScreen() {
             />
             {IS_PREMIUM ? (
               <SettingsToggle
-                icon="clock-o"
+                icon="time-outline"
                 label="Throwbacks"
                 description="Memories from past Worlds"
                 value={throwbacks}
@@ -99,7 +99,7 @@ export default function NotificationsScreen() {
               />
             ) : (
               <SettingsRow
-                icon="clock-o"
+                icon="time-outline"
                 label="Throwbacks"
                 value="Worlding+"
                 onPress={() => router.push('/paywall')}
@@ -115,13 +115,13 @@ export default function NotificationsScreen() {
             footer="Manage emails from Worlding."
           >
             <SettingsToggle
-              icon="envelope"
+              icon="mail-outline"
               label="Email Notifications"
               value={emailEnabled}
               onValueChange={setEmailEnabled}
             />
             <SettingsToggle
-              icon="calendar"
+              icon="calendar-outline"
               label="Weekly Digest"
               description="Summary of your World activity"
               value={weeklyDigest}
@@ -129,7 +129,7 @@ export default function NotificationsScreen() {
               disabled={!emailEnabled}
             />
             <SettingsToggle
-              icon="bullhorn"
+              icon="megaphone-outline"
               label="Product Updates"
               description="New features and improvements"
               value={productUpdates}

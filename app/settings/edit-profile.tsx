@@ -1,9 +1,8 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  Image,
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,30 +13,62 @@ import {
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { CURRENT_USER } from '@/constants/mockData';
-import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
+import { ImagePicker, Toast } from '@/components';
+import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { useAuth } from '@/hooks/useAuth';
+import { updateProfile, uploadAvatar } from '@/lib/api/profiles';
 
 /**
  * Edit Profile Screen
  *
  * Features:
- * - Avatar with edit overlay (camera icon)
+ * - Avatar with ImagePicker (tap to change)
  * - Name input field
- * - Username input field (future)
+ * - Email display (read-only)
  * - Save button in header
- * - Back navigation
+ * - Loading spinner during save
+ * - Success/error toast feedback
  */
 export default function EditProfileScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user, profile, refreshProfile } = useAuth();
 
-  const [name, setName] = useState(CURRENT_USER.name);
+  // Form state
+  const [name, setName] = useState(profile?.name ?? '');
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [hasChanges, setHasChanges] = useState(false);
+
+  // Toast state
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  const [toastType, setToastType] = useState<'success' | 'error'>('success');
+
+  // Derived values
+  const currentAvatarUrl = profile?.avatar_url ?? null;
+  const displayAvatar = avatarUri ?? currentAvatarUrl;
+  const userEmail = user?.email ?? '';
+
+  // Change tracking
+  const hasNameChange = name.trim() !== (profile?.name ?? '');
+  const hasAvatarChange = avatarUri !== null;
+  const hasChanges = hasNameChange || hasAvatarChange;
+
+  // Sync name state when profile loads
+  useEffect(() => {
+    if (profile?.name) {
+      setName(profile.name);
+    }
+  }, [profile?.name]);
+
+  const showToast = (type: 'success' | 'error', message: string) => {
+    setToastType(type);
+    setToastMessage(message);
+    setToastVisible(true);
+  };
 
   const handleNameChange = (text: string) => {
     setName(text);
-    setHasChanges(text !== CURRENT_USER.name);
   };
 
   const handleSave = async () => {
@@ -45,22 +76,38 @@ export default function EditProfileScreen() {
 
     setIsSaving(true);
     try {
-      // TODO: Implement profile update via Supabase
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API call
-      router.back();
+      // Upload avatar if changed
+      if (hasAvatarChange && avatarUri) {
+        const avatarResult = await uploadAvatar(avatarUri);
+        if (avatarResult.error) {
+          showToast('error', 'Failed to upload photo');
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      // Update name if changed
+      if (hasNameChange) {
+        const nameResult = await updateProfile({ name: name.trim() });
+        if (nameResult.error) {
+          showToast('error', 'Failed to update profile');
+          setIsSaving(false);
+          return;
+        }
+      }
+
+      // Refresh profile in auth context
+      await refreshProfile();
+
+      // Show success toast, then navigate back
+      showToast('success', 'Profile updated!');
+      setTimeout(() => router.back(), 1500);
     } catch (error) {
       console.error('Failed to save profile:', error);
-    } finally {
+      showToast('error', 'Something went wrong');
       setIsSaving(false);
     }
   };
-
-  const handleAvatarPress = () => {
-    // TODO: Implement image picker
-    console.log('TODO: Open image picker');
-  };
-
-  const firstName = CURRENT_USER.name.split(' ')[0];
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -95,27 +142,24 @@ export default function EditProfileScreen() {
           entering={FadeInUp.delay(100).duration(400)}
           style={styles.avatarSection}
         >
-          <Pressable onPress={handleAvatarPress} style={styles.avatarContainer}>
-            {CURRENT_USER.avatar ? (
-              <Image source={{ uri: CURRENT_USER.avatar }} style={styles.avatar} />
-            ) : (
-              <LinearGradient
-                colors={[Colors.accent, Colors.accentDark]}
-                style={styles.avatar}
-              >
-                <Text style={styles.avatarText}>{firstName.slice(0, 1)}</Text>
-              </LinearGradient>
-            )}
-
-            {/* Camera Overlay */}
-            <View style={styles.cameraOverlay}>
-              <FontAwesome name="camera" size={14} color={Colors.textPrimary} />
+          {isSaving ? (
+            <View style={styles.avatarLoading}>
+              <ActivityIndicator size="large" color={Colors.accent} />
             </View>
-          </Pressable>
-
-          <Pressable onPress={handleAvatarPress}>
-            <Text style={styles.changePhotoText}>Change Photo</Text>
-          </Pressable>
+          ) : (
+            <ImagePicker
+              value={displayAvatar}
+              onChange={setAvatarUri}
+              placeholder="Add photo"
+              icon="camera-outline"
+              aspect={[1, 1]}
+              size="large"
+              shape="circle"
+              allowsEditing={true}
+              quality={0.8}
+              showCamera={false}
+            />
+          )}
         </Animated.View>
 
         {/* Form Fields */}
@@ -136,6 +180,7 @@ export default function EditProfileScreen() {
                 autoCapitalize="words"
                 autoCorrect={false}
                 returnKeyType="done"
+                editable={!isSaving}
               />
             </View>
           </View>
@@ -145,8 +190,7 @@ export default function EditProfileScreen() {
             <Text style={styles.fieldLabel}>Email</Text>
             <View style={[styles.inputContainer, styles.inputDisabled]}>
               <Text style={styles.inputDisabledText}>
-                {/* TODO: Get from auth */}
-                alex@example.com
+                {userEmail}
               </Text>
               <FontAwesome name="lock" size={14} color={Colors.textMuted} />
             </View>
@@ -156,6 +200,14 @@ export default function EditProfileScreen() {
           </View>
         </Animated.View>
       </ScrollView>
+
+      {/* Toast */}
+      <Toast
+        message={toastMessage}
+        visible={toastVisible}
+        type={toastType}
+        onHide={() => setToastVisible(false)}
+      />
     </View>
   );
 }
@@ -210,40 +262,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: Spacing.xl,
   },
-  avatarContainer: {
-    position: 'relative',
-    marginBottom: Spacing.md,
-    ...Shadows.sm,
-  },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.xxxl,
-    fontWeight: '600',
-  },
-  cameraOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  avatarLoading: {
+    width: 200,
+    height: 200,
+    borderRadius: 100,
     backgroundColor: Colors.surface,
-    borderWidth: 2,
-    borderColor: Colors.background,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  changePhotoText: {
-    color: Colors.accent,
-    fontSize: Typography.sizes.md,
-    fontWeight: '500',
   },
   formSection: {
     paddingHorizontal: Spacing.lg,

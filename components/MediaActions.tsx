@@ -22,11 +22,13 @@ import {
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
-import type { Photo } from '@/constants/mockData';
-import { deleteMedia, saveMediaToCameraRoll, shareMedia } from '@/lib/media-utils';
+import type { MediaWithOwner } from '@/lib/database.types';
+import { saveMediaToCameraRoll, shareMedia } from '@/lib/media-utils';
+import { deleteMedia } from '@/lib/api/media';
 
 interface MediaActionsProps {
-  media: Photo;
+  media: MediaWithOwner;
+  uri: string; // Pre-resolved signed URL
   isOwner: boolean;
   isOpen: boolean;
   onClose: () => void;
@@ -179,6 +181,7 @@ function DeleteConfirmation({ onConfirm, onCancel, isDeleting }: DeleteConfirmPr
  */
 export function MediaActions({
   media,
+  uri,
   isOwner,
   isOpen,
   onClose,
@@ -227,7 +230,7 @@ export function MediaActions({
   // Handle share
   const handleShare = async () => {
     setShareState('loading');
-    const result = await shareMedia(media);
+    const result = await shareMedia(uri, media.id, media.type);
     setShareState(result.success ? 'success' : 'error');
     
     // Reset state after a delay
@@ -237,7 +240,7 @@ export function MediaActions({
   // Handle save
   const handleSave = async () => {
     setSaveState('loading');
-    const result = await saveMediaToCameraRoll(media);
+    const result = await saveMediaToCameraRoll(uri, media.id, media.type);
     setSaveState(result.success ? 'success' : 'error');
     
     if (result.success && Platform.OS !== 'web') {
@@ -258,9 +261,9 @@ export function MediaActions({
 
   const handleDeleteConfirm = async () => {
     setIsDeleting(true);
-    const result = await deleteMedia(media);
+    const result = await deleteMedia(media.id);
     
-    if (result.success) {
+    if (!result.error) {
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }

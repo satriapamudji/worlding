@@ -1,4 +1,4 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { Tabs } from 'expo-router';
 import React from 'react';
@@ -8,13 +8,13 @@ import { Colors, Radius, Spacing } from '@/constants/theme';
 import { RequireAuth } from '@/components/RequireAuth';
 
 function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
+  name: React.ComponentProps<typeof Ionicons>['name'];
   color: string;
   focused: boolean;
 }) {
   return (
     <View style={[styles.iconContainer, props.focused && styles.iconFocused]}>
-      <FontAwesome size={20} {...props} />
+      <Ionicons size={22} name={props.name} color={props.color} />
     </View>
   );
 }
@@ -23,7 +23,7 @@ function CreateTabIcon({ focused }: { focused: boolean }) {
   return (
     <View style={[styles.createIconOuter, focused && styles.createIconOuterFocused]}>
       <View style={styles.createIconInner}>
-        <FontAwesome name="plus" size={20} color={Colors.textPrimary} />
+        <Ionicons name="add" size={28} color={Colors.textPrimary} />
       </View>
     </View>
   );
@@ -54,7 +54,7 @@ export default function TabLayout() {
         options={{
           title: 'Worlds',
           tabBarIcon: ({ color, focused }) => (
-            <TabBarIcon name="globe" color={color} focused={focused} />
+            <TabBarIcon name="globe-outline" color={color} focused={focused} />
           ),
         }}
       />
@@ -73,7 +73,7 @@ export default function TabLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color, focused }) => (
-            <TabBarIcon name="user" color={color} focused={focused} />
+            <TabBarIcon name="person-outline" color={color} focused={focused} />
           ),
         }}
       />

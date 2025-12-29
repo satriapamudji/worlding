@@ -1,11 +1,11 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Colors, Spacing, Typography } from '@/constants/theme';
 
 export interface SettingsRowProps {
-  icon?: React.ComponentProps<typeof FontAwesome>['name'];
+  icon?: React.ComponentProps<typeof Ionicons>['name'];
   label: string;
   value?: string;
   onPress?: () => void;
@@ -46,9 +46,9 @@ export function SettingsRow({
       <View style={styles.leftContent}>
         {icon && (
           <View style={[styles.iconContainer, destructive && styles.iconDestructive]}>
-            <FontAwesome
+            <Ionicons
               name={icon}
-              size={16}
+              size={18}
               color={destructive ? Colors.error : Colors.textSecondary}
             />
           </View>
@@ -69,9 +69,9 @@ export function SettingsRow({
           <Text style={styles.value}>{value}</Text>
         )}
         {showChevron && onPress && (
-          <FontAwesome
-            name="chevron-right"
-            size={12}
+          <Ionicons
+            name="chevron-forward"
+            size={16}
             color={Colors.textMuted}
             style={styles.chevron}
           />

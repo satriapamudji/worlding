@@ -141,6 +141,13 @@ function RootLayoutNav() {
             animation: 'slide_from_bottom',
           }}
         />
+        <Stack.Screen
+          name="profile-setup"
+          options={{
+            headerShown: false,
+            animation: 'slide_from_right',
+          }}
+        />
 
         {/* Settings Screens - Full screen on top of tabs */}
         <Stack.Screen

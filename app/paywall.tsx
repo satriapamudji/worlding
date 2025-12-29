@@ -1,6 +1,7 @@
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
@@ -28,6 +29,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { RequireAuth } from '@/components/RequireAuth';
 import { Button } from '@/components/Button';
+import { LegalModal } from '@/components/LegalModal';
 import { MOCK_WORLDS, CURRENT_USER } from '@/constants/mockData';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 
@@ -51,6 +53,7 @@ export default function PaywallScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [selectedPeriod, setSelectedPeriod] = useState<BillingPeriod>('yearly');
+  const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
 
   const handleClose = () => {
     router.back();
@@ -87,7 +90,7 @@ export default function PaywallScreen() {
           {/* Close Button */}
           <Animated.View entering={FadeIn.delay(200)} style={styles.closeButtonContainer}>
             <Pressable style={styles.closeButton} onPress={handleClose}>
-              <Text style={styles.closeIcon}>✕</Text>
+              <Ionicons name="close" size={18} color={Colors.textMuted} />
             </Pressable>
           </Animated.View>
 
@@ -122,19 +125,19 @@ export default function PaywallScreen() {
           <View style={styles.valueSection}>
             <ValueCard
               delay={600}
-              icon="🌍"
+              icon="globe-outline"
               title="Keep the magic going"
               description="Create unlimited Worlds for every trip, weekend, and moment worth remembering"
             />
             <ValueCard
               delay={700}
-              icon="🔔"
+              icon="notifications-outline"
               title="Never forget a moment"
               description="Get Throwback notifications with your group's best photos from this day in history"
             />
             <ValueCard
               delay={800}
-              icon="✨"
+              icon="sparkles"
               title="Auto-highlights, done for you"
               description="AI finds your best shots and creates beautiful highlight reels automatically"
             />
@@ -172,9 +175,20 @@ export default function PaywallScreen() {
             <Pressable onPress={handleRestore} style={styles.restoreButton}>
               <Text style={styles.restoreText}>Restore Purchases</Text>
             </Pressable>
-            <Text style={styles.terms}>Terms of Service • Privacy Policy</Text>
+            <Text style={styles.terms}>
+              <Text style={styles.termsLink} onPress={() => setLegalModalType('terms')}>Terms of Service</Text>
+              {' • '}
+              <Text style={styles.termsLink} onPress={() => setLegalModalType('privacy')}>Privacy Policy</Text>
+            </Text>
           </Animated.View>
         </ScrollView>
+
+        {/* Legal Modal */}
+        <LegalModal
+          visible={legalModalType !== null}
+          type={legalModalType || 'terms'}
+          onClose={() => setLegalModalType(null)}
+        />
       </View>
     </RequireAuth>
   );
@@ -229,7 +243,7 @@ function ProductHero() {
  */
 interface ValueCardProps {
   delay: number;
-  icon: string;
+  icon: keyof typeof Ionicons.glyphMap;
   title: string;
   description: string;
 }
@@ -260,14 +274,14 @@ function ValueCard({ delay, icon, title, description }: ValueCardProps) {
         style={styles.valueCard}
       >
         <View style={styles.valueIconContainer}>
-          <Text style={styles.valueIcon}>{icon}</Text>
+          <Ionicons name={icon} size={24} color={Colors.accent} />
         </View>
         <View style={styles.valueContent}>
           <Text style={styles.valueTitle}>{title}</Text>
           <Text style={styles.valueDescription}>{description}</Text>
         </View>
         <View style={styles.valueCheck}>
-          <Text style={styles.valueCheckmark}>✓</Text>
+          <Ionicons name="checkmark" size={14} color={Colors.success} />
         </View>
       </Pressable>
     </Animated.View>
@@ -409,7 +423,8 @@ function PricingToggle({ selectedPeriod, onPeriodChange }: PricingToggleProps) {
             end={{ x: 1, y: 0 }}
             style={styles.saveBadge}
           >
-            <Text style={styles.saveBadgeText}>Save 40% 🎉</Text>
+            <Text style={styles.saveBadgeText}>Save 40% </Text>
+            <Ionicons name="gift" size={12} color={Colors.textPrimary} />
           </LinearGradient>
         </Animated.View>
       )}
@@ -452,7 +467,7 @@ function PricingDisplay({ period }: PricingDisplayProps) {
 function TrustItem({ text }: { text: string }) {
   return (
     <View style={styles.trustItem}>
-      <Text style={styles.trustCheck}>✓</Text>
+      <Ionicons name="checkmark" size={12} color={Colors.success} />
       <Text style={styles.trustText}>{text}</Text>
     </View>
   );
@@ -485,10 +500,6 @@ const styles = StyleSheet.create({
     borderColor: Colors.glassBorder,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  closeIcon: {
-    color: Colors.textMuted,
-    fontSize: 16,
   },
 
   // Product Hero
@@ -629,9 +640,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  valueIcon: {
-    fontSize: 24,
-  },
   valueContent: {
     flex: 1,
   },
@@ -653,11 +661,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16, 185, 129, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  valueCheckmark: {
-    color: Colors.success,
-    fontSize: 14,
-    fontWeight: '600',
   },
 
   // Pricing Section
@@ -723,6 +726,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
   },
   saveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.xs,
     borderRadius: Radius.xl,
@@ -778,10 +783,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xs,
   },
-  trustCheck: {
-    color: Colors.success,
-    fontSize: 12,
-  },
   trustText: {
     color: Colors.textSecondary,
     fontSize: Typography.sizes.xs,
@@ -811,5 +812,9 @@ const styles = StyleSheet.create({
   terms: {
     color: Colors.textMuted,
     fontSize: Typography.sizes.xs,
+  },
+  termsLink: {
+    color: 'rgba(255, 255, 255, 0.5)',
+    textDecorationLine: 'underline',
   },
 });

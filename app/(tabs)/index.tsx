@@ -1,7 +1,9 @@
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useMemo, useState, useCallback } from 'react';
 import {
+  ActivityIndicator,
   Dimensions,
   Pressable,
   ScrollView,
@@ -22,8 +24,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
 import { GlassCard, WorldCard } from '@/components';
-import { CURRENT_USER, MOCK_WORLDS } from '@/constants/mockData';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
+import { useAuth } from '@/hooks/useAuth';
+import { getMyWorlds } from '@/lib/api/worlds';
+import type { WorldWithDetails } from '@/lib/database.types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -46,12 +50,71 @@ function getTimeBasedGreeting(): string {
   return 'Night owl';
 }
 
+/**
+ * Format a date range string from ISO date strings
+ */
+function formatDateRange(startDate: string, endDate: string): string {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  
+  const startMonth = start.toLocaleDateString('en-US', { month: 'short' });
+  const startDay = start.getDate();
+  const endMonth = end.toLocaleDateString('en-US', { month: 'short' });
+  const endDay = end.getDate();
+  
+  if (startMonth === endMonth) {
+    return `${startMonth} ${startDay} - ${endDay}`;
+  }
+  return `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
+}
+
+/**
+ * Transform Supabase world data to WorldCard format
+ */
+function transformWorldForCard(world: WorldWithDetails) {
+  return {
+    id: world.id,
+    title: world.title,
+    coverUri: world.cover_url || 'https://images.unsplash.com/photo-1682687220742-aba13b6e50ba?w=800',
+    dateRange: formatDateRange(world.start_date, world.end_date),
+    photoCount: world.media_count || 0,
+    members: world.members.map(m => ({
+      id: m.user_id,
+      name: m.profile?.name || 'Unknown',
+      avatar: m.profile?.avatar_url || undefined,
+    })),
+    state: world.state,
+  };
+}
+
 export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { profile } = useAuth();
+  
+  const [worlds, setWorlds] = useState<WorldWithDetails[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState<'active' | 'archived'>('active');
   const createButtonScale = useSharedValue(1);
+
+  // Fetch worlds on mount and when screen comes into focus
+  const fetchWorlds = useCallback(async () => {
+    const { data, error } = await getMyWorlds();
+    if (error) {
+      console.warn('Failed to fetch worlds:', error);
+    } else {
+      setWorlds(data || []);
+    }
+    setIsLoading(false);
+    setIsRefreshing(false);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchWorlds();
+    }, [fetchWorlds])
+  );
 
   const handleWorldPress = (worldId: string) => {
     if (Platform.OS !== 'web') {
@@ -99,26 +162,26 @@ export default function HomeScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     setIsRefreshing(true);
-    setTimeout(() => setIsRefreshing(false), 700);
-  }, []);
+    fetchWorlds();
+  }, [fetchWorlds]);
 
-  const firstName = CURRENT_USER.name.split(' ')[0];
+  const firstName = profile?.name?.split(' ')[0] || 'there';
 
   const summaryLine = useMemo(() => {
-    if (!MOCK_WORLDS.length) return '';
-    const worldCount = MOCK_WORLDS.length;
-    const photoCount = MOCK_WORLDS.reduce((acc, w) => acc + w.photoCount, 0);
+    if (!worlds.length) return '';
+    const worldCount = worlds.length;
+    const photoCount = worlds.reduce((acc, w) => acc + (w.media_count || 0), 0);
     const worldLabel = worldCount === 1 ? 'World' : 'Worlds';
     const memoryLabel = photoCount === 1 ? 'memory' : 'memories';
     return `${worldCount} ${worldLabel} • ${photoCount} ${memoryLabel}`;
-  }, []);
+  }, [worlds]);
 
   // Split worlds into active/building vs archived
   const { activeWorlds, archivedWorlds } = useMemo(() => {
-    const active = MOCK_WORLDS.filter(w => w.state === 'active' || w.state === 'building');
-    const archived = MOCK_WORLDS.filter(w => w.state === 'archived');
+    const active = worlds.filter(w => w.state === 'active' || w.state === 'building');
+    const archived = worlds.filter(w => w.state === 'archived');
     return { activeWorlds: active, archivedWorlds: archived };
-  }, []);
+  }, [worlds]);
 
   // Get displayed worlds based on active tab
   const displayedWorlds = activeTab === 'active' ? activeWorlds : archivedWorlds;
@@ -129,6 +192,15 @@ export default function HomeScreen() {
     }
     setActiveTab(tab);
   };
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer, { paddingTop: insets.top }]}>
+        <ActivityIndicator size="large" color={Colors.accent} />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -150,9 +222,9 @@ export default function HomeScreen() {
           {/* Top Row: Avatar + Greeting + Scan */}
           <View style={styles.topRow}>
             <Pressable style={styles.avatarButton}>
-              {CURRENT_USER.avatar ? (
+              {profile?.avatar_url ? (
                 <Animated.Image
-                  source={{ uri: CURRENT_USER.avatar }}
+                  source={{ uri: profile.avatar_url }}
                   style={styles.avatar}
                 />
               ) : (
@@ -161,7 +233,7 @@ export default function HomeScreen() {
                   style={styles.avatar}
                 >
                   <Text style={styles.avatarText}>
-                    {firstName.slice(0, 1)}
+                    {firstName.slice(0, 1).toUpperCase()}
                   </Text>
                 </LinearGradient>
               )}
@@ -187,7 +259,7 @@ export default function HomeScreen() {
         </Animated.View>
 
         {/* Worlds List */}
-        {MOCK_WORLDS.length > 0 ? (
+        {worlds.length > 0 ? (
           <View style={styles.worldsSection}>
             {/* Tab Row */}
             <View style={styles.tabRow}>
@@ -197,7 +269,7 @@ export default function HomeScreen() {
                 onPressOut={handleCreatePressOut}
               >
                 <Animated.View style={[styles.newWorldChip, createButtonStyle]}>
-                  <Text style={styles.newWorldPlus}>+</Text>
+                  <Ionicons name="add" size={18} color={Colors.textPrimary} />
                   <Text style={styles.newWorldText}>New</Text>
                 </Animated.View>
               </Pressable>
@@ -239,21 +311,24 @@ export default function HomeScreen() {
             {/* Filtered Worlds List */}
             {displayedWorlds.length > 0 ? (
               <View style={styles.worldsList}>
-                {displayedWorlds.map((world, index) => (
-                  <WorldCard
-                    key={world.id}
-                    id={world.id}
-                    title={world.title}
-                    coverUri={world.coverUri}
-                    dateRange={world.dateRange}
-                    photoCount={world.photoCount}
-                    members={world.members}
-                    state={world.state}
-                    index={index}
-                    onPress={handleWorldPress}
-                    onLongPress={handleWorldLongPress}
-                  />
-                ))}
+                {displayedWorlds.map((world, index) => {
+                  const cardData = transformWorldForCard(world);
+                  return (
+                    <WorldCard
+                      key={world.id}
+                      id={cardData.id}
+                      title={cardData.title}
+                      coverUri={cardData.coverUri}
+                      dateRange={cardData.dateRange}
+                      photoCount={cardData.photoCount}
+                      members={cardData.members}
+                      state={cardData.state}
+                      index={index}
+                      onPress={handleWorldPress}
+                      onLongPress={handleWorldLongPress}
+                    />
+                  );
+                })}
               </View>
             ) : (
               <View style={styles.emptyTabState}>
@@ -274,21 +349,12 @@ export default function HomeScreen() {
                 <View style={[styles.emptyPhoto, styles.emptyPhoto3]} />
                 <View style={[styles.emptyPhoto, styles.emptyPhoto2]} />
                 <View style={[styles.emptyPhoto, styles.emptyPhoto1]}>
-                  <Text style={styles.emptyPhotoIcon}>+</Text>
+                  <Ionicons name="add" size={32} color={Colors.textMuted} />
                 </View>
               </View>
             </View>
 
-            {/* Content */}
-            <View style={styles.emptyContent}>
-              <Text style={styles.emptyTitle}>Your memories, together</Text>
-              <Text style={styles.emptySubtitle}>
-                After a trip or night out, everyone's photos stay on their phones.{' '}
-                <Text style={styles.emptySubtitleBold}>Worlding brings them together.</Text>
-              </Text>
-            </View>
-
-            {/* CTA */}
+            {/* Primary CTA - Most prominent */}
             <View style={styles.emptyCta}>
               <Pressable
                 onPress={handleCreatePress}
@@ -300,22 +366,30 @@ export default function HomeScreen() {
                     colors={[Colors.accent, Colors.accentDark]}
                     style={styles.createButtonGradient}
                   >
+                    <Ionicons name="add" size={20} color={Colors.textPrimary} />
                     <Text style={styles.createButtonText}>Create Your First World</Text>
                   </LinearGradient>
                 </Animated.View>
               </Pressable>
+            </View>
 
-              {/* Value props */}
-              <View style={styles.valueProps}>
-                <View style={styles.valueProp}>
-                  <Text style={styles.valuePropIcon}>✨</Text>
-                  <Text style={styles.valuePropText}>Auto-collects photos</Text>
-                </View>
-                <View style={styles.valuePropDot} />
-                <View style={styles.valueProp}>
-                  <Text style={styles.valuePropIcon}>👥</Text>
-                  <Text style={styles.valuePropText}>Everyone's photos</Text>
-                </View>
+            {/* Supporting copy - Secondary */}
+            <View style={styles.emptyContent}>
+              <Text style={styles.emptySubtitle}>
+                Bring everyone's photos together after trips, parties, and nights out.
+              </Text>
+            </View>
+
+            {/* Value props */}
+            <View style={styles.valueProps}>
+              <View style={styles.valueProp}>
+                <Ionicons name="sparkles" size={14} color={Colors.textMuted} />
+                <Text style={styles.valuePropText}>Auto-collects photos</Text>
+              </View>
+              <View style={styles.valuePropDot} />
+              <View style={styles.valueProp}>
+                <Ionicons name="people-outline" size={14} color={Colors.textMuted} />
+                <Text style={styles.valuePropText}>Everyone's photos</Text>
               </View>
             </View>
           </Animated.View>
@@ -329,6 +403,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   scrollView: {
     flex: 1,
@@ -567,7 +645,8 @@ const styles = StyleSheet.create({
   // Empty Content
   emptyContent: {
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   emptyTitle: {
     color: Colors.textPrimary,
@@ -581,7 +660,7 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.md,
     textAlign: 'center',
     lineHeight: Typography.sizes.md * 1.6,
-    paddingHorizontal: Spacing.md,
+    paddingHorizontal: Spacing.lg,
   },
   emptySubtitleBold: {
     color: Colors.textPrimary,
@@ -597,6 +676,9 @@ const styles = StyleSheet.create({
     ...Shadows.glowSubtle,
   },
   createButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
     paddingHorizontal: Spacing.xxl,
     paddingVertical: Spacing.lg,
     borderRadius: Radius.xl,

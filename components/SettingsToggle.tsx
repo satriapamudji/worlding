@@ -1,11 +1,11 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { StyleSheet, Switch, Text, View } from 'react-native';
 
 import { Colors, Spacing, Typography } from '@/constants/theme';
 
 interface SettingsToggleProps {
-  icon?: React.ComponentProps<typeof FontAwesome>['name'];
+  icon?: React.ComponentProps<typeof Ionicons>['name'];
   label: string;
   description?: string;
   value: boolean;
@@ -35,7 +35,7 @@ export function SettingsToggle({
       <View style={styles.leftContent}>
         {icon && (
           <View style={styles.iconContainer}>
-            <FontAwesome name={icon} size={16} color={Colors.textSecondary} />
+            <Ionicons name={icon} size={18} color={Colors.textSecondary} />
           </View>
         )}
         <View style={styles.textContent}>

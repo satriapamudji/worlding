@@ -1,11 +1,12 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Linking } from 'expo-linking';
+import { Ionicons } from '@expo/vector-icons';
+import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { LegalModal } from '@/components/LegalModal';
 import { SettingsRow } from '@/components/SettingsRow';
 import { SettingsSection } from '@/components/SettingsSection';
 import { SettingsToggle } from '@/components/SettingsToggle';
@@ -32,6 +33,9 @@ export default function PrivacyScreen() {
 
   // Profile settings
   const [showActivity, setShowActivity] = useState(true);
+
+  // Legal modal
+  const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
 
   // Mock cache size - TODO: Get from actual cache
   const [cacheSize] = useState('128 MB');
@@ -104,7 +108,7 @@ export default function PrivacyScreen() {
       {/* Header */}
       <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
         <Pressable style={styles.backButton} onPress={() => router.back()}>
-          <FontAwesome name="chevron-left" size={18} color={Colors.textPrimary} />
+          <Ionicons name="chevron-back" size={24} color={Colors.textPrimary} />
         </Pressable>
 
         <Text style={styles.headerTitle}>Privacy</Text>
@@ -124,20 +128,20 @@ export default function PrivacyScreen() {
             footer="Auto-sync adds matching photos from your camera roll to active Worlds."
           >
             <SettingsToggle
-              icon="refresh"
+              icon="refresh-outline"
               label="Auto-Sync Photos"
               description="Sync photos during World dates"
               value={autoSync}
               onValueChange={setAutoSync}
             />
             <SettingsRow
-              icon="folder-open"
+              icon="folder-open-outline"
               label="Photo Library Access"
               value="Full Access"
               onPress={openSystemSettings}
             />
             <SettingsRow
-              icon="ban"
+              icon="ban-outline"
               label="Excluded Albums"
               value="3 albums"
               onPress={handleExcludedAlbums}
@@ -155,14 +159,14 @@ export default function PrivacyScreen() {
             }
           >
             <SettingsToggle
-              icon="image"
+              icon="image-outline"
               label="Upload Original Quality"
               description="Use full resolution photos"
               value={uploadOriginal}
               onValueChange={setUploadOriginal}
             />
             <SettingsToggle
-              icon="signal"
+              icon="cellular-outline"
               label="Use Cellular Data"
               description="Sync photos over mobile data"
               value={useCellular}
@@ -178,13 +182,13 @@ export default function PrivacyScreen() {
             footer="Cached photos allow faster loading when viewing Worlds."
           >
             <SettingsRow
-              icon="database"
+              icon="server-outline"
               label="Cached Photos"
               value={cacheSize}
               showChevron={false}
             />
             <SettingsRow
-              icon="trash-o"
+              icon="trash-outline"
               label="Clear Cache"
               onPress={handleClearCache}
             />
@@ -198,7 +202,7 @@ export default function PrivacyScreen() {
             footer="Control how others interact with you in Worlds."
           >
             <SettingsToggle
-              icon="eye"
+              icon="eye-outline"
               label="Show Activity Status"
               description="Let others see when you're active"
               value={showActivity}
@@ -214,19 +218,19 @@ export default function PrivacyScreen() {
             footer="Manage your personal data and account."
           >
             <SettingsRow
-              icon="download"
+              icon="download-outline"
               label="Export Your Data"
               onPress={handleExportData}
             />
             <SettingsRow
-              icon="file-text-o"
+              icon="document-text-outline"
               label="Privacy Policy"
-              onPress={() => Linking.openURL('https://worlding.app/privacy')}
+              onPress={() => setLegalModalType('privacy')}
             />
             <SettingsRow
-              icon="file-o"
+              icon="document-outline"
               label="Terms of Service"
-              onPress={() => Linking.openURL('https://worlding.app/terms')}
+              onPress={() => setLegalModalType('terms')}
             />
           </SettingsSection>
         </Animated.View>
@@ -235,7 +239,7 @@ export default function PrivacyScreen() {
         <Animated.View entering={FadeInUp.delay(600).duration(400)}>
           <SettingsSection title="Account">
             <SettingsRow
-              icon="trash"
+              icon="trash-outline"
               label="Delete Account"
               destructive
               showChevron={false}
@@ -244,6 +248,15 @@ export default function PrivacyScreen() {
           </SettingsSection>
         </Animated.View>
       </ScrollView>
+
+      {/* Legal Modal */}
+      {legalModalType && (
+        <LegalModal
+          visible={true}
+          type={legalModalType}
+          onClose={() => setLegalModalType(null)}
+        />
+      )}
     </View>
   );
 }
