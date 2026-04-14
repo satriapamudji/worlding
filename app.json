@@ -22,10 +22,12 @@
         "backgroundColor": "#ffffff"
       },
       "permissions": [
+        "NOTIFICATIONS",
         "NOTIFICATIONS"
       ],
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.worlding"
     },
     "web": {
       "bundler": "metro",

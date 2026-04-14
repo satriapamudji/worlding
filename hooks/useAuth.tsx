@@ -10,8 +10,9 @@ import React, {
 import type { Session, User } from '@supabase/supabase-js';
 
 import { createProfile } from '@/lib/api/profiles';
-import { supabase } from '@/lib/supabase';
 import type { Profile } from '@/lib/database.types';
+import { logger } from '@/lib/logger';
+import { supabase } from '@/lib/supabase';
 
 const SESSION_BOOTSTRAP_TIMEOUT_MS = 5000;
 
@@ -101,7 +102,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
             });
 
             if (createError) {
-              console.warn('Failed to auto-create profile:', createError);
+              logger.auth.warn('Failed to auto-create profile', { error: createError });
 
               const { data: retryProfile, error: retryError } = await supabase
                 .from('profiles')
@@ -127,14 +128,15 @@ export function AuthProvider({ children }: AuthProviderProps) {
           setProfile(null);
           return;
         }
-        console.warn('Error fetching profile:', error.message);
+        logger.auth.warn('Error fetching profile', { error: error.message });
         setProfile(null);
         return;
       }
-      
+
+      logger.auth.info('Profile loaded', { userId: user.id });
       setProfile(data as Profile);
     } catch (e) {
-      console.error('Failed to fetch profile:', e);
+      logger.auth.error('Failed to fetch profile', e);
       setProfile(null);
     } finally {
       setProfileLoading(false);

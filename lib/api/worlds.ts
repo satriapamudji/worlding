@@ -5,11 +5,11 @@
  */
 
 import { supabase } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
 import type {
   ApiResponse,
   ApiListResponse,
   World,
-  WorldInsert,
   WorldUpdate,
   WorldWithDetails,
   Profile,
@@ -117,6 +117,7 @@ export async function createWorld(
 
   let coverUrl: string | null = null;
   let coverSize = 0;
+  let coverPath: string | null = null;
 
   // Upload cover image if provided
   if (coverUri) {
@@ -125,6 +126,7 @@ export async function createWorld(
     coverSize = fileBody.length;
     const { contentType, extension } = inferContentTypeAndExtension(coverUri, 'image/jpeg');
     const filePath = `${user.id}/${timestamp}.${extension}`;
+    coverPath = filePath;
 
     const { error: uploadError } = await supabase.storage
       .from('world-covers')
@@ -134,7 +136,7 @@ export async function createWorld(
       });
 
     if (uploadError) {
-      console.warn('Failed to upload cover:', uploadError.message);
+      logger.world.warn('Failed to upload cover', { error: uploadError.message });
       coverSize = 0; // Reset since upload failed
       // Continue without cover - not a fatal error
     } else {
@@ -145,40 +147,29 @@ export async function createWorld(
     }
   }
   
-  // Create the world
-  const worldInsert: WorldInsert = {
-    title,
-    start_date: startDate,
-    end_date: endDate,
-    cover_url: coverUrl,
-    created_by: user.id,
-  };
-  
-  const { data: world, error: worldError } = await supabase
-    .from('worlds')
-    .insert(worldInsert)
-    .select()
-    .single();
-  
-  if (worldError) {
-    return { data: null, error: worldError.message };
-  }
-  
-  // Add creator as owner member
-  const { error: memberError } = await supabase
-    .from('world_members')
-    .insert({
-      world_id: world.id,
-      user_id: user.id,
-      role: 'owner',
-      sync_status: 'pending',
+  const { data, error: worldError } = await supabase
+    .rpc('create_world', {
+      title,
+      start_date: startDate,
+      end_date: endDate,
+      cover_url: coverUrl,
     });
-  
-  if (memberError) {
-    // Rollback world creation
-    await supabase.from('worlds').delete().eq('id', world.id);
-    return { data: null, error: memberError.message };
+
+  if (worldError) {
+    if (coverPath) {
+      await supabase.storage.from('world-covers').remove([coverPath]);
+    }
+
+    const message = worldError.message ?? 'Failed to create world';
+    if (message.includes('subscription_required')) {
+      return { data: null, error: 'subscription_required' };
+    }
+
+    return { data: null, error: message };
   }
+
+  // RPC returns an array, get first item
+  const world = (Array.isArray(data) ? data[0] : data) as World;
 
   // Update storage used for cover image
   if (coverSize > 0) {

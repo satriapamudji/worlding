@@ -71,6 +71,8 @@ export {
 export type {
   ApiListResponse,
   ApiResponse,
+  AnalyticsEvent,
+  Entitlement,
   InviteCode,
   InviteValidationResult,
   JoinWorldResult,

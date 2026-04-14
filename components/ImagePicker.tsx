@@ -22,6 +22,7 @@ import {
 } from 'react-native';
 
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { logger } from '@/lib/logger';
 
 interface ImagePickerProps {
   /** Current image URI (if any) */
@@ -116,7 +117,7 @@ export function ImagePicker({
         onChange(result.assets[0].uri);
       }
     } catch (error) {
-      console.error('Image picker error:', error);
+      logger.media.error('Image picker error', error);
     } finally {
       setIsLoading(false);
     }

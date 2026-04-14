@@ -19,9 +19,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 
+import { useAuth } from '@/hooks/useAuth';
+import { useSubscription } from '@/hooks/useSubscription';
+
 import { CalendarRangeSheet } from '@/components/CalendarRangeSheet';
+import { VerifyConnectionSheet } from '@/components/VerifyConnectionSheet';
 import { Colors, Radius, Spacing, Typography, Shadows, Layout } from '@/constants/theme';
 import { createWorld } from '@/lib/api/worlds';
+import { trackEvent } from '@/lib/analytics';
+import { logger } from '@/lib/logger';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COVER_HEIGHT = 280;
@@ -35,6 +41,15 @@ const COVER_HEIGHT = 280;
 export default function CreateScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { profile, refreshProfile } = useAuth();
+  const {
+    canAccessPaidFeatures,
+    needsConnection,
+    purchaseSyncStatus,
+    refreshEntitlements,
+    presentPaywall,
+    markPurchaseSyncDelayed,
+  } = useSubscription();
 
   const today = new Date();
   const defaultStart = new Date(today);
@@ -46,6 +61,7 @@ export default function CreateScreen() {
   const [endDate, setEndDate] = useState<Date>(today);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showVerifySheet, setShowVerifySheet] = useState(false);
 
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState<Date>(
@@ -61,6 +77,10 @@ export default function CreateScreen() {
   };
 
   const isDateRangeValid = startDate <= endDate;
+  const ownedWorldsCount = profile?.owned_worlds_count ?? 0;
+  const isFirstWorld = ownedWorldsCount < 1;
+  const requiresSubscription = !isFirstWorld && !canAccessPaidFeatures;
+  const showPaywallHint = !isFirstWorld && !canAccessPaidFeatures;
 
   // --- Image Picker Logic ---
   const handleCoverPress = async () => {
@@ -83,13 +103,29 @@ export default function CreateScreen() {
         setCoverUri(result.assets[0].uri);
       }
     } catch (e) {
-      console.warn('Error picking image:', e);
+      logger.media.warn('Error picking cover image', e);
     }
   };
 
   const handleCreateWorld = async () => {
     const trimmedName = worldName.trim();
     if (!trimmedName || !isDateRangeValid || isSubmitting) return;
+
+    trackEvent('world_create_attempt', {
+      owned_worlds_count: ownedWorldsCount,
+      is_first_world: isFirstWorld,
+    });
+
+    if (requiresSubscription) {
+      if (needsConnection) {
+        trackEvent('subscription_verify_required', { reason: 'create_second_world' });
+        setShowVerifySheet(true);
+        return;
+      }
+
+      openPaywall();
+      return;
+    }
 
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -108,10 +144,33 @@ export default function CreateScreen() {
       );
 
       if (createError || !world) {
+        if (createError === 'subscription_required') {
+          if (purchaseSyncStatus !== 'idle') {
+            markPurchaseSyncDelayed();
+            setError('Still syncing your purchase. Please try again in a moment.');
+          } else if (needsConnection) {
+            trackEvent('subscription_verify_required', { reason: 'create_second_world' });
+            setShowVerifySheet(true);
+          } else {
+            openPaywall();
+          }
+          setIsSubmitting(false);
+          return;
+        }
+
         setError(createError || 'Failed to create world');
         setIsSubmitting(false);
         return;
       }
+
+      trackEvent('world_create_success', {
+        world_id: world.id,
+        is_first_world: isFirstWorld,
+      });
+      if (isFirstWorld) {
+        trackEvent('first_world_completed', { world_id: world.id });
+      }
+      await refreshProfile();
 
       // Navigate based on event timing
       if (isPostEvent()) {
@@ -136,7 +195,7 @@ export default function CreateScreen() {
         });
       }
     } catch (e) {
-      console.error('Create world error:', e);
+      logger.world.error('Create world error', e);
       setError('Something went wrong. Please try again.');
       setIsSubmitting(false);
     }
@@ -186,6 +245,28 @@ export default function CreateScreen() {
     setStartDate(tempRangeStart);
     setEndDate(finalEnd);
     setCalendarVisible(false);
+  };
+
+  const handleVerifyRetry = () => {
+    setShowVerifySheet(false);
+    void refreshEntitlements('verify_retry');
+  };
+
+  const openPaywall = () => {
+    trackEvent('paywall_triggered', {
+      reason: 'create_second_world',
+      owned_worlds_count: ownedWorldsCount,
+    });
+
+    presentPaywall('create_second_world')
+      .then((result) => {
+        if (result.status === 'error') {
+          router.push({ pathname: '/paywall', params: { reason: 'create_second_world' } });
+        }
+      })
+      .catch(() => {
+        router.push({ pathname: '/paywall', params: { reason: 'create_second_world' } });
+      });
   };
 
   const formatDateDisplay = (date: Date) => {
@@ -252,6 +333,20 @@ export default function CreateScreen() {
 
         {/* Content Area - Floating up slightly */}
         <View style={styles.formContent}>
+
+          {showPaywallHint && (
+            <Animated.View entering={FadeInUp.delay(80).duration(400)} style={styles.paywallHint}>
+              <View style={styles.paywallHintIcon}>
+                <Ionicons name="lock-closed" size={18} color={Colors.accent} />
+              </View>
+              <View style={styles.paywallHintContent}>
+                <Text style={styles.paywallHintTitle}>Worlding+ required</Text>
+                <Text style={styles.paywallHintText}>
+                  You've used your free World. Keep editing, then unlock Worlding+ to finish.
+                </Text>
+              </View>
+            </Animated.View>
+          )}
           
           {/* World Name Input */}
           <Animated.View entering={FadeInUp.delay(100).duration(500)} style={styles.titleInputContainer}>
@@ -356,6 +451,12 @@ export default function CreateScreen() {
           onConfirm={handleCalendarConfirm}
         />
       )}
+
+      <VerifyConnectionSheet
+        visible={showVerifySheet}
+        onClose={() => setShowVerifySheet(false)}
+        onRetry={handleVerifyRetry}
+      />
     </View>
   );
 }
@@ -439,6 +540,39 @@ const styles = StyleSheet.create({
   formContent: {
     paddingHorizontal: Spacing.lg,
     marginTop: -40, // Pull up into gradient
+  },
+  paywallHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.md,
+    backgroundColor: Colors.glass,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.glassBorder,
+    marginBottom: Spacing.lg,
+  },
+  paywallHintIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 87, 61, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  paywallHintContent: {
+    flex: 1,
+  },
+  paywallHintTitle: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  paywallHintText: {
+    color: Colors.textSecondary,
+    fontSize: Typography.sizes.xs,
+    lineHeight: Typography.sizes.xs * 1.4,
   },
   titleInputContainer: {
     marginBottom: Spacing.xl,

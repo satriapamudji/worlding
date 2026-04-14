@@ -35,6 +35,7 @@ import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme'
 import { useAuth } from '@/hooks/useAuth';
 import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
 import { getMyWorlds } from '@/lib/api/worlds';
+import { logger } from '@/lib/logger';
 import type { WorldWithDetails } from '@/lib/database.types';
 import { requestPushPermission } from '@/lib/notifications';
 
@@ -119,8 +120,9 @@ export default function HomeScreen() {
   const fetchWorlds = useCallback(async () => {
     const { data, error } = await getMyWorlds();
     if (error) {
-      console.warn('Failed to fetch worlds:', error);
+      logger.world.warn('Failed to fetch worlds', { error });
     } else {
+      logger.world.info('Fetched worlds', { count: data?.length ?? 0 });
       setWorlds(data || []);
     }
     setIsLoading(false);
@@ -140,7 +142,7 @@ export default function HomeScreen() {
 
   const handleWorldLongPress = (worldId: string) => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    console.log('Long-pressed world:', worldId);
+    logger.world.debug('Long-pressed world', { worldId });
   };
 
   const handleCreatePress = () => {

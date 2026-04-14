@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Colors, Radius, Spacing, Typography, Shadows } from '@/constants/theme';
 import { createInviteCode, getActiveInviteCodes, getInviteUrl, getTimeRemaining } from '@/lib/api/invites';
+import { logger } from '@/lib/logger';
 
 /**
  * Invite Screen
@@ -121,7 +122,7 @@ export default function InviteScreen() {
         url: inviteLink, // iOS only
       });
     } catch (shareError) {
-      console.error('Share error:', shareError);
+      logger.world.error('Share error', shareError);
     }
   };
 

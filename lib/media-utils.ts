@@ -10,6 +10,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 
 import type { Media, MediaType } from '@/lib/database.types';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // COMPRESSION CONSTANTS
@@ -174,7 +175,7 @@ export async function downloadMedia(
     // Use fetch to download and write to file
     const response = await fetch(uri);
     if (!response.ok) {
-      console.error('Download failed with status:', response.status);
+      logger.media.error('Download failed', { status: response.status, filename });
       return null;
     }
     
@@ -185,9 +186,10 @@ export async function downloadMedia(
     // Write to file
     await file.write(uint8Array);
     
+    logger.media.debug('Downloaded media', { filename });
     return file;
   } catch (error) {
-    console.error('Error downloading media:', error);
+    logger.media.error('Error downloading media', error);
     return null;
   }
 }
@@ -234,10 +236,10 @@ export async function saveMediaToCameraRoll(
     
     return { success: false, error: 'Failed to save to camera roll' };
   } catch (error) {
-    console.error('Error saving to camera roll:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+    logger.media.error('Error saving to camera roll', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
 }
@@ -286,10 +288,10 @@ export async function shareMedia(
 
     return { success: true };
   } catch (error) {
-    console.error('Error sharing media:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+    logger.media.error('Error sharing media', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
 }
@@ -310,7 +312,7 @@ export async function deleteMediaLocal(
   mediaId: string
 ): Promise<{ success: boolean; error?: string }> {
   // This is kept for backwards compatibility but should not be used
-  console.warn('deleteMediaLocal is deprecated. Use deleteMedia from @/lib/api/media instead.');
-  console.log('Deleted media:', mediaId);
+  logger.media.warn('deleteMediaLocal is deprecated. Use deleteMedia from @/lib/api/media instead.');
+  logger.media.debug('Deleted media', { mediaId });
   return { success: true };
 }

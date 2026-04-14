@@ -17,6 +17,7 @@ import { ImagePicker, Toast } from '@/components';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import { updateProfile, uploadAvatar } from '@/lib/api/profiles';
+import { logger } from '@/lib/logger';
 
 /**
  * Edit Profile Screen
@@ -100,10 +101,11 @@ export default function EditProfileScreen() {
       await refreshProfile();
 
       // Show success toast, then navigate back
+      logger.auth.info('Profile updated');
       showToast('success', 'Profile updated!');
       setTimeout(() => router.back(), 1500);
     } catch (error) {
-      console.error('Failed to save profile:', error);
+      logger.auth.error('Failed to save profile', error);
       showToast('error', 'Something went wrong');
       setIsSaving(false);
     }

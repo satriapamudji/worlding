@@ -1,6 +1,9 @@
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
+// expo-file-system types are incomplete - cacheDirectory exists at runtime
+const cacheDirectory = (FileSystem as { cacheDirectory?: string | null }).cacheDirectory ?? null;
+
 const joinPath = (base: string, entry: string) =>
   base.endsWith('/') ? `${base}${entry}` : `${base}/${entry}`;
 
@@ -34,18 +37,16 @@ async function getDirectorySize(path: string): Promise<number> {
 }
 
 export async function getCacheSize(): Promise<number> {
-  const cacheDir = FileSystem.cacheDirectory;
-  if (Platform.OS === 'web' || !cacheDir) return 0;
-  return getDirectorySize(cacheDir);
+  if (Platform.OS === 'web' || !cacheDirectory) return 0;
+  return getDirectorySize(cacheDirectory);
 }
 
 export async function clearCache(): Promise<void> {
-  const cacheDir = FileSystem.cacheDirectory;
-  if (Platform.OS === 'web' || !cacheDir) return;
-  const entries = await FileSystem.readDirectoryAsync(cacheDir);
+  if (Platform.OS === 'web' || !cacheDirectory) return;
+  const entries = await FileSystem.readDirectoryAsync(cacheDirectory);
   await Promise.all(
     entries.map((entry) =>
-      FileSystem.deleteAsync(joinPath(cacheDir, entry), {
+      FileSystem.deleteAsync(joinPath(cacheDirectory, entry), {
         idempotent: true,
       })
     ),

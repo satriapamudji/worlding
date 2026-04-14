@@ -33,6 +33,7 @@ import { RequireAuth } from '@/components/RequireAuth';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { getWorld, getWorldMedia, archiveWorld } from '@/lib/api';
 import { formatDateRange } from '@/lib/database.types';
+import { logger } from '@/lib/logger';
 import type { WorldWithDetails, MediaWithOwner, WorldMemberWithProfile, WorldState, SyncStatus } from '@/lib/database.types';
 import { formatDuration } from '@/lib/media-utils';
 
@@ -287,7 +288,7 @@ export default function WorldViewScreen() {
       const worldResult = await getWorld(id);
       if (worldResult.error || !worldResult.data) {
         if (hasLoadedOnceRef.current) {
-          console.warn('Failed to refresh world:', worldResult.error || 'World not found');
+          logger.world.warn('Failed to refresh world', { worldId: id, error: worldResult.error || 'World not found' });
           return;
         }
 
@@ -309,7 +310,7 @@ export default function WorldViewScreen() {
       // Fetch media with signed URLs
       const mediaResult = await getWorldMedia(id);
       if (mediaResult.error) {
-        console.warn('Failed to load media:', mediaResult.error);
+        logger.media.warn('Failed to load media', { worldId: id, error: mediaResult.error });
         setPhotos([]);
       } else if (mediaResult.data.length > 0) {
         // Get signed URLs for all media
@@ -329,7 +330,7 @@ export default function WorldViewScreen() {
         setPhotos([]);
       }
     } catch (e) {
-      console.error('Error loading world:', e);
+      logger.world.error('Error loading world', { worldId: id, error: e });
       if (!hasLoadedOnceRef.current) {
         setError('Failed to load world');
       }
@@ -618,7 +619,7 @@ export default function WorldViewScreen() {
         url: shareUrl,
       });
     } catch (error) {
-      console.warn('Share failed', error);
+      logger.world.warn('Share failed', error);
     }
   };
 
@@ -654,7 +655,7 @@ export default function WorldViewScreen() {
     try {
       const result = await archiveWorld(id!);
       if (result.error) {
-        console.error('Failed to archive world:', result.error);
+        logger.world.error('Failed to archive world', { worldId: id, error: result.error });
         // TODO: Show error toast
         return;
       }
@@ -662,7 +663,7 @@ export default function WorldViewScreen() {
       await loadWorldData();
       setShowCelebration(true);
     } catch (e) {
-      console.error('Error archiving world:', e);
+      logger.world.error('Error archiving world', { worldId: id, error: e });
     } finally {
       setIsArchiving(false);
     }
@@ -701,7 +702,7 @@ export default function WorldViewScreen() {
   const handleNudgeAll = () => {
     triggerHaptic(Haptics.ImpactFeedbackStyle.Medium);
     // In a real app, this would send notifications to all pending members
-    console.log('Nudge all pending members:', pendingMembers.map(m => m.name));
+    logger.world.info('Nudge all pending members', { members: pendingMembers.map(m => m.name) });
   };
 
 

@@ -27,6 +27,7 @@ import { ImagePicker, Toast } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import { createProfile, uploadAvatar } from '@/lib/api/profiles';
+import { logger } from '@/lib/logger';
 
 type AuthMetadata = {
   full_name?: string;
@@ -120,7 +121,7 @@ export default function ProfileSetupScreen() {
         const { error: uploadError } = await uploadAvatar(avatarUri);
         if (uploadError) {
           // Profile created but avatar failed - show toast, continue to app
-          console.warn('Avatar upload failed:', uploadError);
+          logger.auth.warn('Avatar upload failed', { error: uploadError });
           setToastMessage('Avatar upload failed. You can add it later in settings.');
           setToastVisible(true);
         }
@@ -129,10 +130,11 @@ export default function ProfileSetupScreen() {
       // Refresh profile in auth context
       await refreshProfile();
 
+      logger.auth.info('Profile setup complete', { userId: user.id });
       // Navigate to main app
       router.replace('/(tabs)');
     } catch (e) {
-      console.error('Profile setup error:', e);
+      logger.auth.error('Profile setup error', e);
       setError('Something went wrong. Please try again.');
       setIsSubmitting(false);
     }

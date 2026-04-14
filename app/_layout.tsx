@@ -11,10 +11,9 @@ import 'react-native-reanimated';
 
 import { Colors } from '@/constants/theme';
 import { AuthProvider } from '@/hooks/useAuth';
+import { SubscriptionProvider } from '@/hooks/useSubscription';
 
-export {
-    ErrorBoundary
-} from 'expo-router';
+export { ErrorBoundary } from 'expo-router';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -61,119 +60,121 @@ function RootLayoutNav() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <ThemeProvider value={WorldingDarkTheme}>
-          <StatusBar style="light" />
-          <Stack
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: Colors.background,
-          },
-          headerTintColor: Colors.textPrimary,
-          headerShadowVisible: false,
-          contentStyle: {
-            backgroundColor: Colors.background,
-          },
-          animation: 'fade',
-        }}
-      >
-        {/* Entry Point */}
-        <Stack.Screen 
-          name="index" 
-          options={{ 
-            headerShown: false,
-          }} 
-        />
-        
-        {/* Auth Flow */}
-        <Stack.Screen 
-          name="onboarding" 
-          options={{ 
-            headerShown: false,
-          }} 
-        />
-        <Stack.Screen 
-          name="auth" 
-          options={{ 
-            headerShown: false,
-            animation: 'slide_from_right',
-          }} 
-        />
-        
-        {/* Main App */}
-        <Stack.Screen 
-          name="(tabs)" 
-          options={{ 
-            headerShown: false,
-          }} 
-        />
-        
-        {/* Modals & Screens */}
-        <Stack.Screen 
-          name="review" 
-          options={{ 
-            presentation: 'modal',
-            headerShown: false,
-          }} 
-        />
-        <Stack.Screen
-          name="world"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        />
-        <Stack.Screen
-          name="paywall"
-          options={{
-            presentation: 'modal',
-            headerShown: false,
-          }}
-        />
-        <Stack.Screen
-          name="invite"
-          options={{
-            headerShown: false,
-            animation: 'fade',
-          }}
-        />
-        <Stack.Screen
-          name="scan"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_bottom',
-          }}
-        />
-        <Stack.Screen
-          name="join"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_bottom',
-            presentation: 'modal',
-            gestureEnabled: true,
-          }}
-        />
-        <Stack.Screen
-          name="profile-setup"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        />
+          <SubscriptionProvider>
+            <ThemeProvider value={WorldingDarkTheme}>
+              <StatusBar style="light" />
+              <Stack
+                screenOptions={{
+                  headerStyle: {
+                    backgroundColor: Colors.background,
+                  },
+                  headerTintColor: Colors.textPrimary,
+                  headerShadowVisible: false,
+                  contentStyle: {
+                    backgroundColor: Colors.background,
+                  },
+                  animation: 'fade',
+                }}
+              >
+                {/* Entry Point */}
+                <Stack.Screen 
+                  name="index" 
+                  options={{ 
+                    headerShown: false,
+                  }} 
+                />
+                
+                {/* Auth Flow */}
+                <Stack.Screen 
+                  name="onboarding" 
+                  options={{ 
+                    headerShown: false,
+                  }} 
+                />
+                <Stack.Screen 
+                  name="auth" 
+                  options={{ 
+                    headerShown: false,
+                    animation: 'slide_from_right',
+                  }} 
+                />
+                
+                {/* Main App */}
+                <Stack.Screen 
+                  name="(tabs)" 
+                  options={{ 
+                    headerShown: false,
+                  }} 
+                />
+                
+                {/* Modals & Screens */}
+                <Stack.Screen 
+                  name="review" 
+                  options={{ 
+                    presentation: 'modal',
+                    headerShown: false,
+                  }} 
+                />
+                <Stack.Screen
+                  name="world"
+                  options={{
+                    headerShown: false,
+                    animation: 'slide_from_right',
+                  }}
+                />
+                <Stack.Screen
+                  name="paywall"
+                  options={{
+                    presentation: 'modal',
+                    headerShown: false,
+                  }}
+                />
+                <Stack.Screen
+                  name="invite"
+                  options={{
+                    headerShown: false,
+                    animation: 'fade',
+                  }}
+                />
+                <Stack.Screen
+                  name="scan"
+                  options={{
+                    headerShown: false,
+                    animation: 'slide_from_bottom',
+                  }}
+                />
+                <Stack.Screen
+                  name="join"
+                  options={{
+                    headerShown: false,
+                    animation: 'slide_from_bottom',
+                    presentation: 'modal',
+                    gestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
+                  name="profile-setup"
+                  options={{
+                    headerShown: false,
+                    animation: 'slide_from_right',
+                  }}
+                />
 
-        {/* Settings Screens - Full screen on top of tabs */}
-        <Stack.Screen
-          name="settings"
-          options={{
-            headerShown: false,
-            animation: 'ios_from_right',
-            gestureEnabled: true,
-            gestureDirection: 'horizontal',
-            fullScreenGestureEnabled: true,
-            animationDuration: 350,
-          }}
-        />
-        </Stack>
-          </ThemeProvider>
+                {/* Settings Screens - Full screen on top of tabs */}
+                <Stack.Screen
+                  name="settings"
+                  options={{
+                    headerShown: false,
+                    animation: 'ios_from_right',
+                    gestureEnabled: true,
+                    gestureDirection: 'horizontal',
+                    fullScreenGestureEnabled: true,
+                    animationDuration: 350,
+                  }}
+                />
+              </Stack>
+            </ThemeProvider>
+          </SubscriptionProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

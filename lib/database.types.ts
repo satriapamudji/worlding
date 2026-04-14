@@ -28,6 +28,10 @@ export interface Profile {
   avatar_url: string | null;
   storage_used: number;
   storage_limit: number;
+  owned_worlds_count: number;
+  first_world_created_at: string | null;
+  acquisition_channel: string | null;
+  acquisition_campaign: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,6 +106,8 @@ export interface ProfileInsert {
   id: string; // Must match auth.users.id
   name: string;
   avatar_url?: string | null;
+  acquisition_channel?: string | null;
+  acquisition_campaign?: string | null;
 }
 
 export interface WorldInsert {
@@ -150,6 +156,36 @@ export interface MediaInsert {
 export interface ProfileUpdate {
   name?: string;
   avatar_url?: string | null;
+  storage_limit?: number;
+  owned_worlds_count?: number;
+  first_world_created_at?: string | null;
+  acquisition_channel?: string | null;
+  acquisition_campaign?: string | null;
+}
+
+/**
+ * Entitlement - RevenueCat mirrored entitlement state
+ */
+export interface Entitlement {
+  user_id: string;
+  entitlement_id: string;
+  is_active: boolean;
+  product_id: string | null;
+  period_type: string | null;
+  expires_at: string | null;
+  last_event_type: string | null;
+  updated_at: string;
+}
+
+/**
+ * Analytics event row
+ */
+export interface AnalyticsEvent {
+  id: string;
+  user_id: string | null;
+  event_name: string;
+  properties: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface WorldUpdate {

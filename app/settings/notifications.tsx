@@ -5,15 +5,16 @@ import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'r
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
+import { useSubscription } from '@/hooks/useSubscription';
+
+import { VerifyConnectionSheet } from '@/components/VerifyConnectionSheet';
 import { SettingsRow } from '@/components/SettingsRow';
 import { SettingsSection } from '@/components/SettingsSection';
 import { SettingsToggle } from '@/components/SettingsToggle';
 import { Colors, Spacing, Typography } from '@/constants/theme';
-import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
+import { trackEvent } from '@/lib/analytics';
 import { getPushPermissionState, requestPushPermission, type PushPermissionState } from '@/lib/notifications';
-
-// TODO: Get from subscription state
-const IS_PREMIUM = false;
 
 /**
  * Notifications Settings Screen
@@ -27,8 +28,10 @@ export default function NotificationsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { prefs, loading, updatePrefs } = useNotificationPrefs();
+  const { canAccessPaidFeatures, needsConnection, presentPaywall, refreshEntitlements } = useSubscription();
   const [permissionState, setPermissionState] = useState<PushPermissionState | null>(null);
   const [isRequestingPush, setIsRequestingPush] = useState(false);
+  const [showVerifySheet, setShowVerifySheet] = useState(false);
 
   // Local state mirrors persisted prefs for smoother UI
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -130,6 +133,30 @@ export default function NotificationsScreen() {
     updatePrefs({ throwbacks: value });
   }, [updatePrefs]);
 
+  const handleThrowbacksPaywall = () => {
+    if (needsConnection) {
+      trackEvent('subscription_verify_required', { reason: 'throwbacks' });
+      setShowVerifySheet(true);
+      return;
+    }
+
+    trackEvent('paywall_triggered', { reason: 'throwbacks', source: 'notifications' });
+    presentPaywall('throwbacks')
+      .then((result) => {
+        if (result.status === 'error') {
+          router.push({ pathname: '/paywall', params: { reason: 'throwbacks' } });
+        }
+      })
+      .catch(() => {
+        router.push({ pathname: '/paywall', params: { reason: 'throwbacks' } });
+      });
+  };
+
+  const handleVerifyRetry = () => {
+    setShowVerifySheet(false);
+    void refreshEntitlements('verify_retry');
+  };
+
   const handleEmailToggle = useCallback((value: boolean) => {
     setEmailEnabled(value);
     updatePrefs({ emailEnabled: value });
@@ -209,7 +236,7 @@ export default function NotificationsScreen() {
               onValueChange={handleWorldInvitesToggle}
               disabled={!pushEnabled || pushPermissionDenied}
             />
-            {IS_PREMIUM ? (
+            {canAccessPaidFeatures ? (
               <SettingsToggle
                 icon="time-outline"
                 label="Throwbacks"
@@ -223,7 +250,7 @@ export default function NotificationsScreen() {
                 icon="time-outline"
                 label="Throwbacks"
                 value="Worlding+"
-                onPress={() => router.push('/paywall')}
+                onPress={handleThrowbacksPaywall}
               />
             )}
           </SettingsSection>
@@ -260,6 +287,12 @@ export default function NotificationsScreen() {
           </SettingsSection>
         </Animated.View>
       </ScrollView>
+
+      <VerifyConnectionSheet
+        visible={showVerifySheet}
+        onClose={() => setShowVerifySheet(false)}
+        onRetry={handleVerifyRetry}
+      />
     </View>
   );
 }

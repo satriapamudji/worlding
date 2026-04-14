@@ -2,11 +2,12 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Dimensions,
   Image,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -27,15 +28,47 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { RequireAuth } from '@/components/RequireAuth';
+import { useSubscription } from '@/hooks/useSubscription';
+
 import { Button } from '@/components/Button';
-import { LegalModal } from '@/components/LegalModal';
-import { MOCK_WORLDS, CURRENT_USER } from '@/constants/mockData';
-import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
+import { RequireAuth } from '@/components/RequireAuth';
+import { Toast } from '@/components/Toast';
+import { MOCK_WORLDS } from '@/constants/mockData';
+import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { type PaywallReason, trackEvent } from '@/lib/analytics';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 type BillingPeriod = 'yearly' | 'monthly';
+
+const TERMS_URL = 'https://www.worlding.fun/terms';
+const PRIVACY_URL = 'https://www.worlding.fun/privacy';
+
+const PAYWALL_REASONS: PaywallReason[] = [
+  'create_second_world',
+  'throwbacks',
+  'drop_export',
+  'highlights',
+  'relive',
+  'storage_limit',
+  'restore_purchase',
+  'unknown',
+];
+
+const isPaywallReason = (value: string): value is PaywallReason =>
+  PAYWALL_REASONS.includes(value as PaywallReason);
+
+const formatCurrency = (amount: number, currency: string): string => {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+};
 
 /**
  * Redesigned Paywall - World-Class Conversion
@@ -44,7 +77,7 @@ type BillingPeriod = 'yearly' | 'monthly';
  * - Show value BEFORE price
  * - Emotional connection (memories, not features)
  * - Social proof builds trust
- * - Free trial removes risk
+ * - Clear pricing with a single CTA
  * - Single clear CTA
  *
  * Inspired by: Notion, Superhuman, Calm, Things
@@ -52,22 +85,98 @@ type BillingPeriod = 'yearly' | 'monthly';
 export default function PaywallScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ reason?: string }>();
+  const { annualPackage, monthlyPackage, purchasePackage, restorePurchases } =
+    useSubscription();
   const [selectedPeriod, setSelectedPeriod] = useState<BillingPeriod>('yearly');
-  const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
+  const [isPurchasing, setIsPurchasing] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastType, setToastType] = useState<'success' | 'error'>('success');
+
+  const reason = useMemo<PaywallReason>(() => {
+    if (typeof params.reason === 'string' && isPaywallReason(params.reason)) {
+      return params.reason;
+    }
+    return 'unknown';
+  }, [params.reason]);
+
+  const selectedPackage = selectedPeriod === 'yearly' ? annualPackage : monthlyPackage;
+  const hasPackages = Boolean(annualPackage || monthlyPackage);
+  const storeLabel = Platform.OS === 'android'
+    ? 'Managed by Google Play'
+    : 'Managed by the App Store';
+
+  useEffect(() => {
+    if (!annualPackage && monthlyPackage) {
+      setSelectedPeriod('monthly');
+    }
+    if (!monthlyPackage && annualPackage) {
+      setSelectedPeriod('yearly');
+    }
+  }, [annualPackage, monthlyPackage]);
+
+  useEffect(() => {
+    trackEvent('paywall_impression', { reason });
+  }, [reason]);
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToastMessage(message);
+    setToastType(type);
+  };
 
   const handleClose = () => {
+    trackEvent('paywall_dismiss', { reason });
     router.back();
   };
 
-  const handleSubscribe = () => {
-    // TODO: Implement subscription with RevenueCat/Superwall
-    console.log('Subscribe to:', selectedPeriod);
-    router.back();
+  const handleSubscribe = async () => {
+    if (!selectedPackage || isPurchasing) {
+      showToast('Unable to load subscription options.', 'error');
+      return;
+    }
+
+    setIsPurchasing(true);
+    trackEvent('paywall_purchase_start', {
+      reason,
+      package: selectedPackage.identifier,
+    });
+
+    try {
+      const result = await purchasePackage(selectedPackage);
+
+      if (result.success) {
+        trackEvent('paywall_purchase_success', { reason });
+        router.back();
+      } else if (result.cancelled) {
+        trackEvent('paywall_dismiss', { reason });
+      } else {
+        trackEvent('paywall_purchase_fail', { reason, error: result.error });
+        showToast(result.error ?? 'Purchase failed. Try again.', 'error');
+      }
+    } catch (error) {
+      trackEvent('paywall_purchase_fail', { reason, error: String(error) });
+      showToast('Purchase failed. Try again.', 'error');
+    } finally {
+      setIsPurchasing(false);
+    }
   };
 
   const handleRestore = () => {
-    // TODO: Implement restore purchases
-    console.log('Restore purchases');
+    restorePurchases()
+      .then((result) => {
+        if (result.success) {
+          trackEvent('restore_success', { reason });
+          showToast('Purchases restored.', 'success');
+          return;
+        }
+
+        trackEvent('restore_fail', { reason, error: result.error });
+        showToast(result.error ?? 'Restore failed. Try again.', 'error');
+      })
+      .catch((error) => {
+        trackEvent('restore_fail', { reason, error: String(error) });
+        showToast('Restore failed. Try again.', 'error');
+      });
   };
 
   return (
@@ -100,10 +209,10 @@ export default function PaywallScreen() {
           {/* Headline */}
           <Animated.View entering={FadeInUp.delay(400).duration(500)} style={styles.headlineSection}>
             <Text style={styles.headline}>
-              Ready for unlimited{'\n'}Worlds?
+              Keep everyone's photos{'\n'}in one place.
             </Text>
             <Text style={styles.subheadline}>
-              Keep creating memories with unlimited Worlds, Throwbacks, and AI Highlights
+              Create unlimited Worlds and relive every trip, night out, and weekend together.
             </Text>
           </Animated.View>
 
@@ -126,20 +235,20 @@ export default function PaywallScreen() {
             <ValueCard
               delay={600}
               icon="globe-outline"
-              title="Keep the magic going"
-              description="Create unlimited Worlds for every trip, weekend, and moment worth remembering"
+              title="Unlimited Worlds"
+              description="Your first World is free - create as many as you want after"
             />
             <ValueCard
               delay={700}
-              icon="notifications-outline"
-              title="Never forget a moment"
-              description="Get Throwback notifications with your group's best photos from this day in history"
+              icon="sparkles"
+              title="Relive + Highlights + Drop"
+              description="Cinematic replays, best shots picked, and shareable video drops"
             />
             <ValueCard
               delay={800}
-              icon="sparkles"
-              title="Auto-highlights, done for you"
-              description="AI finds your best shots and creates beautiful highlight reels automatically"
+              icon="time-outline"
+              title="Throwbacks"
+              description="Group memories brought back at the perfect time"
             />
           </View>
 
@@ -150,23 +259,35 @@ export default function PaywallScreen() {
               onPeriodChange={setSelectedPeriod}
             />
 
-            <PricingDisplay period={selectedPeriod} />
+            <PricingDisplay period={selectedPeriod} rcPackage={selectedPackage} />
+
+            {!hasPackages && (
+              <Text style={styles.pricingError}>
+                Can't load subscription options. Check your connection and try again.
+              </Text>
+            )}
 
             {/* CTA Button */}
             <Button
-              title="Try 7 Days Free"
-              subtitle={`Then ${selectedPeriod === 'yearly' ? '$29.99/year' : '$3.99/month'}`}
+              title="Unlock Worlding+"
+              subtitle={
+                selectedPackage
+                  ? `${selectedPeriod === 'yearly' ? 'Annual' : 'Monthly'} - ${selectedPackage.product.priceString}/${selectedPeriod === 'yearly' ? 'year' : 'month'}`
+                  : 'Check connection to load pricing'
+              }
               onPress={handleSubscribe}
               variant="primary"
               size="large"
               fullWidth
+              loading={isPurchasing}
+              disabled={!hasPackages || isPurchasing}
             />
 
             {/* Trust Signals */}
             <View style={styles.trustSignals}>
               <TrustItem text="Cancel anytime" />
               <View style={styles.trustDot} />
-              <TrustItem text="No credit card for trial" />
+              <TrustItem text={storeLabel} />
             </View>
           </Animated.View>
 
@@ -176,18 +297,22 @@ export default function PaywallScreen() {
               <Text style={styles.restoreText}>Restore Purchases</Text>
             </Pressable>
             <Text style={styles.terms}>
-              <Text style={styles.termsLink} onPress={() => setLegalModalType('terms')}>Terms of Service</Text>
-              {' • '}
-              <Text style={styles.termsLink} onPress={() => setLegalModalType('privacy')}>Privacy Policy</Text>
+              <Text style={styles.termsLink} onPress={() => Linking.openURL(TERMS_URL)}>
+                Terms of Service
+              </Text>
+              {' | '}
+              <Text style={styles.termsLink} onPress={() => Linking.openURL(PRIVACY_URL)}>
+                Privacy Policy
+              </Text>
             </Text>
           </Animated.View>
         </ScrollView>
 
-        {/* Legal Modal */}
-        <LegalModal
-          visible={legalModalType !== null}
-          type={legalModalType || 'terms'}
-          onClose={() => setLegalModalType(null)}
+        <Toast
+          message={toastMessage ?? ''}
+          visible={toastMessage !== null}
+          type={toastType}
+          onHide={() => setToastMessage(null)}
         />
       </View>
     </RequireAuth>
@@ -423,7 +548,7 @@ function PricingToggle({ selectedPeriod, onPeriodChange }: PricingToggleProps) {
             end={{ x: 1, y: 0 }}
             style={styles.saveBadge}
           >
-            <Text style={styles.saveBadgeText}>Save 40% </Text>
+            <Text style={styles.saveBadgeText}>Best value </Text>
             <Ionicons name="gift" size={12} color={Colors.textPrimary} />
           </LinearGradient>
         </Animated.View>
@@ -438,12 +563,27 @@ function PricingToggle({ selectedPeriod, onPeriodChange }: PricingToggleProps) {
  */
 interface PricingDisplayProps {
   period: BillingPeriod;
+  rcPackage: {
+    product: {
+      priceString: string;
+      price: number;
+      currencyCode?: string;
+    };
+  } | null;
 }
 
-function PricingDisplay({ period }: PricingDisplayProps) {
+function PricingDisplay({ period, rcPackage }: PricingDisplayProps) {
   const isYearly = period === 'yearly';
-  const price = isYearly ? '$29.99' : '$3.99';
-  const breakdown = isYearly ? 'Just $2.50/month' : 'Billed monthly';
+  const priceString = rcPackage?.product.priceString ?? '--';
+  const priceNumber = typeof rcPackage?.product.price === 'number'
+    ? rcPackage.product.price
+    : null;
+  const currencyCode = rcPackage?.product.currencyCode ?? 'USD';
+  const breakdown = isYearly && priceNumber
+    ? `Just ${formatCurrency(priceNumber / 12, currencyCode)}/month`
+    : isYearly
+      ? 'Billed yearly'
+      : 'Billed monthly';
 
   return (
     <Animated.View
@@ -452,7 +592,7 @@ function PricingDisplay({ period }: PricingDisplayProps) {
       style={styles.priceDisplay}
     >
       <View style={styles.priceRow}>
-        <Text style={styles.price}>{price}</Text>
+        <Text style={styles.price}>{priceString}</Text>
         <Text style={styles.pricePeriod}>/{isYearly ? 'year' : 'month'}</Text>
       </View>
       <Text style={styles.priceBreakdown}>{breakdown}</Text>
@@ -769,6 +909,12 @@ const styles = StyleSheet.create({
     fontSize: Typography.sizes.md,
     fontWeight: '600',
     marginTop: Spacing.xs,
+  },
+  pricingError: {
+    color: Colors.textMuted,
+    fontSize: Typography.sizes.sm,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
   },
 
   // Trust Signals

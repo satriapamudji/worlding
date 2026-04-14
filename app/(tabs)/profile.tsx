@@ -5,6 +5,7 @@ import { useFocusEffect, useRouter, type Href } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,17 +15,22 @@ import {
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { LegalModal, SettingsRow, SettingsSection, SignOutSheet, StorageUsage } from '@/components';
-import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import { useNotificationPrefs } from '@/hooks/useNotificationPrefs';
+import { useSubscription } from '@/hooks/useSubscription';
+
+import { LegalModal, SettingsRow, SettingsSection, SignOutSheet, StorageUsage, Toast } from '@/components';
+import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
 import { getMyWorlds, syncStorageIfStale } from '@/lib/api';
+import { trackEvent } from '@/lib/analytics';
 import { getStorageInfo } from '@/lib/database.types';
+import { logger } from '@/lib/logger';
 import type { StorageInfo } from '@/lib/database.types';
 
-// TODO: Get from subscription state (RevenueCat/Superwall)
-const IS_PREMIUM = false;
-const SUBSCRIPTION_STATUS = IS_PREMIUM ? 'Worlding+' : 'Free';
+const getManageSubscriptionUrl = () =>
+  Platform.OS === 'ios'
+    ? 'https://apps.apple.com/account/subscriptions'
+    : 'https://play.google.com/store/account/subscriptions';
 
 /**
  * Profile Screen - Redesigned
@@ -42,11 +48,14 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { signOut, user, profile, profileLoading, refreshProfile } = useAuth();
   const { prefs: notificationPrefs } = useNotificationPrefs();
+  const { canAccessPaidFeatures, presentCustomerCenter, presentPaywall, restorePurchases } = useSubscription();
 
   const [showSignOutSheet, setShowSignOutSheet] = useState(false);
   const [legalModalType, setLegalModalType] = useState<'terms' | 'privacy' | null>(null);
   const [stats, setStats] = useState({ worldCount: 0, photoCount: 0 });
   const [statsLoading, setStatsLoading] = useState(true);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastType, setToastType] = useState<'success' | 'error'>('success');
 
   // Derive display values from profile
   const displayName = profile?.name ?? 'User';
@@ -55,6 +64,7 @@ export default function ProfileScreen() {
   const userEmail = user?.email ?? '';
   const storageInfo: StorageInfo | null = profile ? getStorageInfo(profile) : null;
   const notificationsEnabled = notificationPrefs.pushEnabled;
+  const subscriptionStatus = canAccessPaidFeatures ? 'Worlding+' : 'Free';
 
   // Fetch stats and sync storage when screen comes into focus
   useFocusEffect(
@@ -95,7 +105,11 @@ export default function ProfileScreen() {
   );
 
   const handleUpgrade = () => {
-    router.push('/paywall');
+    trackEvent('paywall_triggered', { reason: 'unknown', source: 'profile' });
+    presentPaywall('profile').catch((error) => {
+      logger.app.warn('Failed to present paywall', error);
+      router.push({ pathname: '/paywall', params: { reason: 'unknown' } });
+    });
   };
 
   const handleSignOut = async () => {
@@ -113,7 +127,42 @@ export default function ProfileScreen() {
   };
 
   const openURL = (url: string) => {
-    Linking.openURL(url).catch(console.error);
+    Linking.openURL(url).catch((error) => logger.app.error('Failed to open URL', { url, error }));
+  };
+
+  const handleManageSubscription = () => {
+    presentCustomerCenter('profile')
+      .then((result) => {
+        if (result.status === 'error') {
+          openURL(getManageSubscriptionUrl());
+        }
+      })
+      .catch(() => {
+        openURL(getManageSubscriptionUrl());
+      });
+  };
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToastMessage(message);
+    setToastType(type);
+  };
+
+  const handleRestorePurchases = () => {
+    restorePurchases()
+      .then((result) => {
+        if (result.success) {
+          trackEvent('restore_success', { source: 'profile' });
+          showToast('Purchases restored.', 'success');
+          return;
+        }
+
+        trackEvent('restore_fail', { source: 'profile', error: result.error });
+        showToast(result.error ?? 'Restore failed. Try again.', 'error');
+      })
+      .catch((error) => {
+        trackEvent('restore_fail', { source: 'profile', error: String(error) });
+        showToast('Restore failed. Try again.', 'error');
+      });
   };
 
   return (
@@ -164,7 +213,7 @@ export default function ProfileScreen() {
           entering={FadeInUp.delay(100).duration(400)}
           style={styles.premiumSection}
         >
-          <Pressable onPress={handleUpgrade}>
+          <Pressable onPress={canAccessPaidFeatures ? () => openURL(getManageSubscriptionUrl()) : handleUpgrade}>
             <LinearGradient
               colors={['rgba(255, 87, 61, 0.15)', 'rgba(255, 87, 61, 0.05)']}
               start={{ x: 0, y: 0 }}
@@ -175,10 +224,18 @@ export default function ProfileScreen() {
                 <Ionicons name="star" size={16} color={Colors.accent} />
               </View>
               <View style={styles.premiumContent}>
-                <Text style={styles.premiumTitle}>Worlding+</Text>
-                <Text style={styles.premiumSubtitle}>Unlock unlimited Worlds</Text>
+                <Text style={styles.premiumTitle}>
+                  {canAccessPaidFeatures ? 'Worlding+' : 'Upgrade to Worlding+'}
+                </Text>
+                <Text style={styles.premiumSubtitle}>
+                  {canAccessPaidFeatures ? 'Thanks for supporting Worlding' : 'Unlock unlimited Worlds'}
+                </Text>
               </View>
-              <Ionicons name="chevron-forward" size={16} color={Colors.accent} />
+              <Ionicons
+                name={canAccessPaidFeatures ? 'checkmark' : 'chevron-forward'}
+                size={16}
+                color={Colors.accent}
+              />
             </LinearGradient>
           </Pressable>
         </Animated.View>
@@ -222,26 +279,18 @@ export default function ProfileScreen() {
             <SettingsRow
               icon="card-outline"
               label="Current Plan"
-              value={SUBSCRIPTION_STATUS}
+              value={subscriptionStatus}
               showChevron={false}
             />
-            {IS_PREMIUM ? (
-              <SettingsRow
-                icon="settings-outline"
-                label="Manage Subscription"
-                onPress={() => {
-                  // TODO: Open subscription management
-                  openURL('https://apps.apple.com/account/subscriptions');
-                }}
-              />
-            ) : null}
+            <SettingsRow
+              icon="settings-outline"
+              label="Manage Subscription"
+              onPress={handleManageSubscription}
+            />
             <SettingsRow
               icon="refresh-outline"
               label="Restore Purchases"
-              onPress={() => {
-                // TODO: Implement restore purchases via RevenueCat
-                console.log('Restore purchases');
-              }}
+              onPress={handleRestorePurchases}
             />
           </SettingsSection>
         </Animated.View>
@@ -267,7 +316,7 @@ export default function ProfileScreen() {
               label="Rate Worlding"
               onPress={() => {
                 // TODO: Open app store rating
-                console.log('Open app store');
+                logger.app.debug('Open app store for rating');
               }}
             />
           </SettingsSection>
@@ -323,6 +372,13 @@ export default function ProfileScreen() {
           onClose={() => setLegalModalType(null)}
         />
       )}
+
+      <Toast
+        message={toastMessage ?? ''}
+        visible={toastMessage !== null}
+        type={toastType}
+        onHide={() => setToastMessage(null)}
+      />
     </View>
   );
 }

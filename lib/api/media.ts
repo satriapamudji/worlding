@@ -5,6 +5,7 @@
  */
 
 import { supabase } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
 import type {
   ApiResponse,
   ApiListResponse,
@@ -113,7 +114,7 @@ export async function uploadMedia(
       const preview = await compressRelivePreview(uri, options.width, options.height);
       previewUri = preview.uri;
     } catch (e) {
-      console.warn('Image compression failed, uploading original:', e);
+      logger.media.warn('Image compression failed, uploading original', e);
       previewUri = null;
       // Continue with original if compression fails
     }
@@ -287,7 +288,7 @@ export async function deleteMedia(mediaId: string): Promise<ApiResponse<null>> {
     .remove([(media as Media).storage_path]);
   
   if (storageError) {
-    console.warn('Failed to delete file from storage:', storageError.message);
+    logger.media.warn('Failed to delete file from storage', { path: (media as Media).storage_path, error: storageError.message });
     // Continue with database deletion anyway
   }
   

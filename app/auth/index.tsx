@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OtpInput, Toast, WorldingLogo } from '@/components';
 import { Colors, Radius, Shadows, Spacing, Typography } from '@/constants/theme';
+import { logger } from '@/lib/logger';
 import { supabase } from '@/lib/supabase';
 
 // Required for web browser auth session
@@ -214,7 +215,7 @@ export default function AuthScreen() {
         }
       }
     } catch (e) {
-      console.error('Google sign-in error:', e);
+      logger.auth.error('Google sign-in error', e);
       showToast('Google sign-in failed. Please try again.', 'error');
     }
   }, [showToast, triggerHaptic, router]);

@@ -1,6 +1,17 @@
+/**
+ * Review Screen - Camera Roll Integration
+ *
+ * Apple Photos-inspired design with:
+ * - Day-grouped photo grid
+ * - Smart filtering (Recommended / Hidden / Videos)
+ * - Burst photo grouping
+ * - Infinite scroll pagination
+ * - 50+ photos selection prompt
+ * - Video size warnings
+ */
+
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Linking from 'expo-linking';
 import * as MediaLibrary from 'expo-media-library';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -10,23 +21,39 @@ import {
   Platform,
   Pressable,
   SafeAreaView,
+  SectionList,
   StyleSheet,
   Text,
   View,
+  Image,
+  Dimensions,
 } from 'react-native';
-import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeIn } from 'react-native-reanimated';
 
-import { PhotoGrid, Toast } from '@/components';
-import type { Photo } from '@/components/PhotoGrid';
+import {
+  FilterChips,
+  ReviewBottomBar,
+  ReviewHeader,
+  SkeletonGrid,
+  Toast,
+  formatDateRange,
+  createFilterChips,
+} from '@/components';
+import type { FilterChip } from '@/components';
 import { RequireAuth } from '@/components/RequireAuth';
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { Colors, Radius, Spacing, Typography, Layout } from '@/constants/theme';
 import { usePrivacyPrefs } from '@/hooks/usePrivacyPrefs';
+import { useInfinitePhotos, PRESELECT_THRESHOLD } from '@/hooks/useInfinitePhotos';
+import { useBurstGroups } from '@/hooks/useBurstGroups';
 import { uploadMultipleMedia, updateSyncStatus } from '@/lib/api';
+import { logger } from '@/lib/logger';
 import {
   getHiddenPhotos,
   getPreSelectedIds,
   getVisiblePhotos,
-  loadPhotosWithFiltering,
+  getBufferPhotoIds,
+  getVideos,
+  calculateTotalVideoSize,
   type FilteredPhoto,
 } from '@/lib/photo-filter';
 
@@ -37,34 +64,68 @@ import {
 interface UploadProgress {
   completed: number;
   total: number;
-  currentFile?: string;
 }
+
+interface PhotoSection {
+  title: string;
+  date: Date;
+  data: FilteredPhoto[];
+}
+
+type FilterType = 'recommended' | 'hidden' | 'videos';
 
 // ============================================================================
 // HELPERS
 // ============================================================================
 
-function toGridPhoto(photo: FilteredPhoto): Photo {
-  return {
-    id: photo.id,
-    uri: photo.localUri || photo.uri,
-    type: photo.type,
-    width: photo.width,
-    height: photo.height,
-    duration: photo.duration,
-  };
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const COLUMNS = Layout.photoGridColumns;
+const GAP = Layout.photoGridGap;
+const ITEM_SIZE = (SCREEN_WIDTH - Spacing.md * 2 - GAP * (COLUMNS - 1)) / COLUMNS;
+
+/**
+ * Group photos by day for section headers
+ */
+function groupPhotosByDay(photos: FilteredPhoto[]): PhotoSection[] {
+  const groups = new Map<string, FilteredPhoto[]>();
+
+  for (const photo of photos) {
+    const date = new Date(photo.effectiveDate);
+    const dateKey = date.toDateString();
+
+    const existing = groups.get(dateKey) || [];
+    existing.push(photo);
+    groups.set(dateKey, existing);
+  }
+
+  // Convert to sections and sort by date (newest first)
+  const sections: PhotoSection[] = [];
+  for (const [dateKey, photos] of groups) {
+    sections.push({
+      title: formatSectionDate(new Date(dateKey)),
+      date: new Date(dateKey),
+      data: photos,
+    });
+  }
+
+  sections.sort((a, b) => b.date.getTime() - a.date.getTime());
+  return sections;
+}
+
+/**
+ * Format date for section header (e.g., "Saturday, Dec 28")
+ */
+function formatSectionDate(date: Date): string {
+  const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const day = date.getDate();
+  return `${dayName}, ${month} ${day}`;
 }
 
 // ============================================================================
 // COMPONENT
 // ============================================================================
 
-/**
- * Review Screen - Camera Roll Integration
- * 
- * Loads photos from device camera roll filtered by date range,
- * allows selection, and uploads to Supabase storage.
- */
 export default function ReviewScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -79,15 +140,13 @@ export default function ReviewScreen() {
   // Permission state
   const [permissionStatus, setPermissionStatus] = useState<MediaLibrary.PermissionStatus | null>(null);
 
-  // Loading states
-  const [loading, setLoading] = useState(true);
+  // UI state
+  const [activeFilter, setActiveFilter] = useState<FilterType>('recommended');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
-
-  // Data state
-  const [filteredPhotos, setFilteredPhotos] = useState<FilteredPhoto[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<'included' | 'hidden'>('included');
 
   // Toast state
   const [toast, setToast] = useState<{ visible: boolean; message: string }>({
@@ -95,168 +154,188 @@ export default function ReviewScreen() {
     message: '',
   });
 
+  // Memoized excluded album IDs
   const excludedAlbumIds = useMemo(
     () => prefs.excludedAlbums.map((album) => album.id),
     [prefs.excludedAlbums]
   );
 
-  const visiblePhotos = useMemo(
-    () => getVisiblePhotos(filteredPhotos),
+  // Load all photos at once
+  const {
+    photos,
+    loading,
+    error,
+    stats,
+    refresh,
+    initialized,
+  } = useInfinitePhotos({
+    startDate: params.startDate || '',
+    endDate: params.endDate || '',
+    excludedAlbumIds,
+  });
+
+  // Burst grouping hook
+  const {
+    groupedPhotos,
+    burstGroups,
+    expandedBurstId,
+    toggleBurstExpansion,
+    getDisplayPhotos,
+    getBurstForPhoto,
+  } = useBurstGroups(photos);
+
+  // Filtered photos based on active filter
+  const filteredPhotos = useMemo(() => {
+    const displayPhotos = getDisplayPhotos();
+    switch (activeFilter) {
+      case 'recommended':
+        return getVisiblePhotos(displayPhotos);
+      case 'hidden':
+        return getHiddenPhotos(displayPhotos);
+      case 'videos':
+        return getVideos(displayPhotos);
+      default:
+        return displayPhotos;
+    }
+  }, [activeFilter, getDisplayPhotos]);
+
+  // Photo sections for SectionList
+  const photoSections = useMemo(
+    () => groupPhotosByDay(filteredPhotos),
     [filteredPhotos]
   );
 
-  const hiddenPhotos = useMemo(
-    () => getHiddenPhotos(filteredPhotos),
-    [filteredPhotos]
+  // Buffer photo IDs for styling
+  const bufferPhotoIds = useMemo(
+    () => getBufferPhotoIds(photos),
+    [photos]
   );
 
-  const totalCount = filteredPhotos.length;
-  const tabPhotos = activeTab === 'included' ? visiblePhotos : hiddenPhotos;
-  const tabPhotoIds = useMemo(() => tabPhotos.map((photo) => photo.id), [tabPhotos]);
-  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const selectedInTab = useMemo(
-    () => tabPhotoIds.filter((id) => selectedIdSet.has(id)).length,
-    [selectedIdSet, tabPhotoIds]
+  // Filter chip counts
+  const filterChips = useMemo((): FilterChip[] => {
+    const displayPhotos = getDisplayPhotos();
+    return createFilterChips(
+      getVisiblePhotos(displayPhotos).length,
+      getHiddenPhotos(displayPhotos).length,
+      getVideos(displayPhotos).length
+    );
+  }, [getDisplayPhotos]);
+
+  // Total video size for warning
+  const totalVideoSize = useMemo(
+    () => calculateTotalVideoSize(photos, selectedIds),
+    [photos, selectedIds]
   );
 
-  const allSelectedInTab = tabPhotoIds.length > 0 && selectedInTab === tabPhotoIds.length;
-  const hasSelection = selectedIds.length > 0;
-  const gridPhotos = useMemo(() => tabPhotos.map(toGridPhoto), [tabPhotos]);
+  // Date range string for header
+  const dateRangeString = useMemo(() => {
+    if (!params.startDate || !params.endDate) return '';
+    return formatDateRange(params.startDate, params.endDate);
+  }, [params.startDate, params.endDate]);
 
   // ============================================================================
-  // PERMISSIONS & DATA LOADING
+  // EFFECTS
   // ============================================================================
 
-  /**
-   * Request media library permissions
-   */
-  const requestPermission = useCallback(async () => {
-    if (Platform.OS === 'web') {
-      // Media library not available on web
-      setPermissionStatus('denied' as MediaLibrary.PermissionStatus);
-      setLoading(false);
-      return;
-    }
+  // Request permissions
+  useEffect(() => {
+    const requestPermission = async () => {
+      if (Platform.OS === 'web') {
+        setPermissionStatus('denied' as MediaLibrary.PermissionStatus);
+        return;
+      }
 
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    setPermissionStatus(status);
-    if (status !== 'granted') {
-      setLoading(false);
-    }
-    return status;
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      setPermissionStatus(status);
+    };
+
+    void requestPermission();
   }, []);
 
-  /**
-   * Load photos from camera roll filtered by date range
-   */
-  const loadPhotos = useCallback(async () => {
-    if (!params.startDate || !params.endDate) {
-      console.warn('Missing date range params');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setLoading(true);
-      const result = await loadPhotosWithFiltering({
-        startDate: params.startDate,
-        endDate: params.endDate,
-        excludedAlbumIds,
-        pageSize: 500,
-      });
-
-      setFilteredPhotos(result.photos);
-      setSelectedIds(getPreSelectedIds(result.photos));
-      setActiveTab('included');
-    } catch (error) {
-      console.error('Error loading photos:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, [excludedAlbumIds, params.endDate, params.startDate]);
-
-  /**
-   * Initialize: request permissions and load photos
-   */
-  useEffect(() => {
-    void requestPermission();
-  }, [requestPermission]);
-
+  // Load photos when permission granted
   useEffect(() => {
     if (permissionStatus !== 'granted') return;
     if (privacyLoading) return;
-    void loadPhotos();
-  }, [permissionStatus, privacyLoading, loadPhotos]);
+    if (!params.startDate || !params.endDate) return;
+
+    void refresh();
+  }, [permissionStatus, privacyLoading, params.startDate, params.endDate, refresh]);
+
+  // Auto pre-select for fewer than threshold photos
+  useEffect(() => {
+    if (initialized && photos.length > 0 && photos.length < PRESELECT_THRESHOLD && selectedIds.size === 0) {
+      const preSelected = getPreSelectedIds(photos);
+      setSelectedIds(new Set(preSelected));
+    }
+  }, [initialized, photos, selectedIds.size]);
 
   // ============================================================================
   // HANDLERS
   // ============================================================================
 
-  const handleSelectionChange = (ids: string[]) => {
-    setSelectedIds(ids);
-  };
-
-  const handleToggleSelectAll = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    if (tabPhotoIds.length === 0) return;
-
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (allSelectedInTab) {
-        tabPhotoIds.forEach((id) => next.delete(id));
-      } else {
-        tabPhotoIds.forEach((id) => next.add(id));
-      }
-      return Array.from(next);
-    });
-  };
-
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     router.back();
-  };
+  }, [router]);
 
-  const handleOpenSettings = () => {
+  const handleOpenSettings = useCallback(() => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     Linking.openSettings();
-  };
+  }, []);
 
-  /**
-   * Upload selected photos to the world
-   */
+  const handlePhotoSelect = useCallback((photoId: string) => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(photoId)) {
+        next.delete(photoId);
+      } else {
+        next.add(photoId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleFilterChange = useCallback((filterId: string) => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    setActiveFilter(filterId as FilterType);
+  }, []);
+
   const handleAddPhotos = useCallback(async () => {
-    if (!params.worldId || selectedIds.length === 0) return;
+    if (!params.worldId || selectedIds.size === 0) return;
 
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
     setUploading(true);
-    setUploadProgress({ completed: 0, total: selectedIds.length });
+    setUploadProgress({ completed: 0, total: selectedIds.size });
 
     try {
-      // Update sync status to 'syncing'
       await updateSyncStatus(params.worldId, 'syncing');
 
-      const selectedPhotos = filteredPhotos.filter((photo) => selectedIds.includes(photo.id));
+      const selectedPhotos = photos.filter((photo) => selectedIds.has(photo.id));
       const files = selectedPhotos.map((photo) => ({
         uri: photo.localUri || photo.uri,
         type: photo.type,
         width: photo.width,
         height: photo.height,
         duration: photo.duration,
-        takenAt: photo.creationTime
-          ? new Date(photo.creationTime).toISOString()
+        takenAt: photo.effectiveDate
+          ? new Date(photo.effectiveDate).toISOString()
           : undefined,
+        livePhotoMovUri: photo.livePhotoMovUri,
       }));
 
-      // Upload with progress tracking
       const result = await uploadMultipleMedia(
         params.worldId,
         files as Array<{
@@ -272,10 +351,8 @@ export default function ReviewScreen() {
         }
       );
 
-      // Update sync status to 'synced'
       await updateSyncStatus(params.worldId, 'synced');
 
-      // Show result
       const successCount = result.successful.length;
       const failCount = result.failed.length;
 
@@ -290,13 +367,12 @@ export default function ReviewScreen() {
           message: `Added ${successCount} photos to ${params.worldName || 'World'}`,
         });
       }
-    } catch (error) {
-      console.error('Upload error:', error);
+    } catch (err) {
+      logger.upload.error('Upload error', err);
       setToast({
         visible: true,
         message: 'Upload failed. Please try again.',
       });
-      // Revert sync status on error
       if (params.worldId) {
         await updateSyncStatus(params.worldId, 'pending');
       }
@@ -304,74 +380,121 @@ export default function ReviewScreen() {
       setUploading(false);
       setUploadProgress(null);
     }
-  }, [filteredPhotos, params.worldId, params.worldName, selectedIds]);
+  }, [params.worldId, params.worldName, selectedIds, photos]);
 
   const handleToastHide = useCallback(() => {
     setToast({ visible: false, message: '' });
-    // Navigate to world detail after upload
     if (params.worldId) {
       router.replace(`/world/${params.worldId}`);
     }
   }, [router, params.worldId]);
 
+
   // ============================================================================
   // RENDER HELPERS
   // ============================================================================
 
-  /**
-   * Render permission denied state
-   */
-  const renderPermissionDenied = () => (
-    <View style={styles.centerContainer}>
-      <View style={styles.permissionIcon}>
-        <Ionicons name="images-outline" size={48} color={Colors.textMuted} />
+  const renderPhoto = useCallback(
+    (photo: FilteredPhoto) => {
+      const isSelected = selectedIds.has(photo.id);
+      const isBuffer = bufferPhotoIds.has(photo.id);
+      const burst = getBurstForPhoto(photo.id);
+
+      return (
+        <Pressable
+          key={photo.id}
+          onPress={() => handlePhotoSelect(photo.id)}
+          onLongPress={() => {
+            if (burst) {
+              toggleBurstExpansion(burst.burstId);
+            }
+          }}
+          style={[styles.photoItem, { width: ITEM_SIZE, height: ITEM_SIZE }]}
+        >
+          <Image
+            source={{ uri: photo.localUri || photo.uri }}
+            style={[styles.photoImage, isBuffer && styles.bufferPhoto]}
+            resizeMode="cover"
+          />
+
+          {/* Burst badge */}
+          {burst && photo.id === burst.representativePhotoId && expandedBurstId !== burst.burstId && (
+            <View style={styles.burstBadge}>
+              <Ionicons name="layers" size={10} color={Colors.textPrimary} />
+              <Text style={styles.burstCount}>{burst.count}</Text>
+            </View>
+          )}
+
+          {/* Video duration badge */}
+          {photo.type === 'video' && photo.duration && (
+            <View style={styles.durationBadge}>
+              <Text style={styles.durationText}>
+                {Math.floor(photo.duration / 60)}:{String(Math.floor(photo.duration % 60)).padStart(2, '0')}
+              </Text>
+            </View>
+          )}
+
+          {/* Live Photo badge */}
+          {photo.isLivePhoto && (
+            <View style={styles.livePhotoBadge}>
+              <Ionicons name="radio-button-on" size={10} color={Colors.textPrimary} />
+            </View>
+          )}
+
+          {/* Selection checkmark (Apple Photos style, bottom-right) */}
+          <View style={[styles.selectionCircle, isSelected && styles.selectionCircleActive]}>
+            {isSelected && (
+              <Ionicons name="checkmark" size={14} color={Colors.textPrimary} />
+            )}
+          </View>
+        </Pressable>
+      );
+    },
+    [selectedIds, bufferPhotoIds, getBurstForPhoto, expandedBurstId, toggleBurstExpansion, handlePhotoSelect]
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: PhotoSection }) => (
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{section.title}</Text>
       </View>
-      <Text style={styles.permissionTitle}>Photo Access Required</Text>
-      <Text style={styles.permissionMessage}>
-        Worlding needs access to your photos to find memories from this event.
-      </Text>
-      <Pressable style={styles.settingsButton} onPress={handleOpenSettings}>
-        <Text style={styles.settingsButtonText}>Open Settings</Text>
-      </Pressable>
-      <Pressable style={styles.backButton} onPress={handleClose}>
-        <Text style={styles.backButtonText}>Go Back</Text>
-      </Pressable>
-    </View>
+    ),
+    []
   );
 
-  /**
-   * Render loading state
-   */
-  const renderLoading = () => (
-    <View style={styles.centerContainer}>
-      <ActivityIndicator size="large" color={Colors.accent} />
-      <Text style={styles.loadingText}>Finding your memories...</Text>
-    </View>
-  );
-
-  /**
-   * Render empty state (no photos found)
-   */
-  const renderEmpty = () => (
-    <View style={styles.centerContainer}>
-      <View style={styles.emptyIcon}>
-        <Ionicons name="camera-outline" size={48} color={Colors.textMuted} />
+  const renderSection = useCallback(
+    ({ section }: { section: PhotoSection }) => (
+      <View style={styles.photoGrid}>
+        {section.data.map(renderPhoto)}
       </View>
-      <Text style={styles.emptyTitle}>No photos found</Text>
-      <Text style={styles.emptyMessage}>
-        We couldn't find any photos from{' '}
-        {params.worldName || 'this date range'}.
-      </Text>
-      <Pressable style={styles.backButton} onPress={handleClose}>
-        <Text style={styles.backButtonText}>Go Back</Text>
-      </Pressable>
-    </View>
+    ),
+    [renderPhoto]
   );
 
-  /**
-   * Render upload progress overlay
-   */
-  const renderUploadProgress = () => (
+  const renderEmpty = useCallback(
+    () => (
+      <View style={styles.emptyState}>
+        <Ionicons name="image-outline" size={40} color={Colors.textMuted} />
+        <Text style={styles.emptyTitle}>
+          {activeFilter === 'recommended'
+            ? 'No recommended photos'
+            : activeFilter === 'hidden'
+            ? 'No hidden photos'
+            : 'No videos'}
+        </Text>
+        <Text style={styles.emptySubtitle}>
+          {activeFilter === 'recommended'
+            ? 'Try checking Hidden for screenshots or downloads.'
+            : activeFilter === 'hidden'
+            ? 'Everything looks good in your camera roll.'
+            : 'No videos found in this date range.'}
+        </Text>
+      </View>
+    ),
+    [activeFilter]
+  );
+
+  const renderUploadOverlay = () => (
     <View style={styles.uploadOverlay}>
       <View style={styles.uploadCard}>
         <ActivityIndicator size="large" color={Colors.accent} />
@@ -397,26 +520,8 @@ export default function ReviewScreen() {
     </View>
   );
 
-  /**
-   * Render web not supported state
-   */
-  const renderWebNotSupported = () => (
-    <View style={styles.centerContainer}>
-      <View style={styles.permissionIcon}>
-        <Ionicons name="phone-portrait-outline" size={48} color={Colors.textMuted} />
-      </View>
-      <Text style={styles.permissionTitle}>Use the mobile app</Text>
-      <Text style={styles.permissionMessage}>
-        Photo sync is only available on iOS and Android devices.
-      </Text>
-      <Pressable style={styles.backButton} onPress={handleClose}>
-        <Text style={styles.backButtonText}>Go Back</Text>
-      </Pressable>
-    </View>
-  );
-
   // ============================================================================
-  // MAIN RENDER
+  // CONDITIONAL RENDERS
   // ============================================================================
 
   // Web not supported
@@ -424,7 +529,18 @@ export default function ReviewScreen() {
     return (
       <RequireAuth>
         <SafeAreaView style={styles.container}>
-          {renderWebNotSupported()}
+          <View style={styles.centerContainer}>
+            <View style={styles.iconContainer}>
+              <Ionicons name="phone-portrait-outline" size={48} color={Colors.textMuted} />
+            </View>
+            <Text style={styles.stateTitle}>Use the mobile app</Text>
+            <Text style={styles.stateMessage}>
+              Photo sync is only available on iOS and Android devices.
+            </Text>
+            <Pressable style={styles.backButton} onPress={handleClose}>
+              <Text style={styles.backButtonText}>Go Back</Text>
+            </Pressable>
+          </View>
         </SafeAreaView>
       </RequireAuth>
     );
@@ -435,213 +551,116 @@ export default function ReviewScreen() {
     return (
       <RequireAuth>
         <SafeAreaView style={styles.container}>
-          {renderPermissionDenied()}
+          <View style={styles.centerContainer}>
+            <View style={styles.iconContainer}>
+              <Ionicons name="images-outline" size={48} color={Colors.textMuted} />
+            </View>
+            <Text style={styles.stateTitle}>Photo Access Required</Text>
+            <Text style={styles.stateMessage}>
+              Worlding needs access to your photos to find memories from this event.
+            </Text>
+            <Pressable style={styles.settingsButton} onPress={handleOpenSettings}>
+              <Text style={styles.settingsButtonText}>Open Settings</Text>
+            </Pressable>
+            <Pressable style={styles.backButton} onPress={handleClose}>
+              <Text style={styles.backButtonText}>Go Back</Text>
+            </Pressable>
+          </View>
         </SafeAreaView>
       </RequireAuth>
     );
   }
 
-  // Loading
-  if (loading) {
+  // Loading (initial)
+  if (loading && !initialized) {
     return (
       <RequireAuth>
         <SafeAreaView style={styles.container}>
-          {renderLoading()}
+          <ReviewHeader
+            dateRange={dateRangeString}
+            photoCount={0}
+            onClose={handleClose}
+          />
+          <SkeletonGrid loadingText="Finding photos..." />
         </SafeAreaView>
       </RequireAuth>
     );
   }
 
-  // Empty state
-  if (totalCount === 0) {
+  // Empty state (no photos found at all)
+  if (initialized && photos.length === 0) {
     return (
       <RequireAuth>
         <SafeAreaView style={styles.container}>
-          {renderEmpty()}
+          <View style={styles.centerContainer}>
+            <View style={styles.iconContainer}>
+              <Ionicons name="camera-outline" size={48} color={Colors.textMuted} />
+            </View>
+            <Text style={styles.stateTitle}>No photos found</Text>
+            <Text style={styles.stateMessage}>
+              We couldn't find any photos from {params.worldName || 'this date range'}.
+            </Text>
+            <Pressable style={styles.backButton} onPress={handleClose}>
+              <Text style={styles.backButtonText}>Go Back</Text>
+            </Pressable>
+          </View>
         </SafeAreaView>
       </RequireAuth>
     );
   }
 
-  // Main content
+  // ============================================================================
+  // MAIN RENDER
+  // ============================================================================
+
   return (
     <RequireAuth>
       <SafeAreaView style={styles.container}>
         {/* Header */}
-        <Animated.View entering={FadeIn.duration(300)} style={styles.header}>
-          <Pressable onPress={handleClose} style={styles.closeButton}>
-            <Ionicons name="close" size={18} color={Colors.textSecondary} />
-          </Pressable>
+        <ReviewHeader
+          dateRange={dateRangeString}
+          photoCount={photos.length}
+          onClose={handleClose}
+        />
 
-          <View style={styles.headerContent}>
-            <Text style={styles.headerTitle}>
-              Found {totalCount} memories
-            </Text>
-            <Text style={styles.headerSubtitle}>
-              from {params.worldName || 'your camera roll'}
-            </Text>
-          </View>
+        {/* Filter chips */}
+        <FilterChips
+          chips={filterChips}
+          activeChipId={activeFilter}
+          onChipPress={handleFilterChange}
+        />
 
-          <Pressable
-            style={styles.selectAllButton}
-            onPress={handleToggleSelectAll}
-          >
-            <Text style={styles.selectAllText}>
-              {allSelectedInTab ? 'Deselect All' : 'Select All'}
-            </Text>
-          </Pressable>
-        </Animated.View>
-
-        {/* Tabs */}
-        <View style={styles.tabSection}>
-          <Pressable
-            onPress={() => setActiveTab('included')}
-            style={styles.tabItem}
-          >
-            <Text
-              style={[
-                styles.tabText,
-                activeTab === 'included' && styles.tabTextActive,
-              ]}
-            >
-              Recommended ({visiblePhotos.length})
-            </Text>
-            {activeTab === 'included' && <View style={styles.tabIndicator} />}
-          </Pressable>
-
-          <Pressable
-            onPress={() => setActiveTab('hidden')}
-            style={styles.tabItem}
-          >
-            <Text
-              style={[
-                styles.tabText,
-                activeTab === 'hidden' && styles.tabTextActive,
-              ]}
-            >
-              Hidden ({hiddenPhotos.length})
-            </Text>
-            {activeTab === 'hidden' && <View style={styles.tabIndicator} />}
-          </Pressable>
-        </View>
-
-        {/* Scanning Complete Banner */}
-        {tabPhotoIds.length > 0 && (
-          <Animated.View
-            entering={FadeInUp.delay(200).duration(400)}
-            style={styles.scanComplete}
-          >
-            <LinearGradient
-              colors={['rgba(16, 185, 129, 0.15)', 'rgba(16, 185, 129, 0.05)']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.scanCompleteGradient}
-            >
-            <Ionicons name="sparkles" size={16} color={Colors.success} />
-            <Text style={styles.scanText}>
-              {activeTab === 'included' ? 'Recommended' : 'Hidden'}: {selectedInTab} of {tabPhotoIds.length} selected
-            </Text>
-          </LinearGradient>
-        </Animated.View>
-      )}
-
-        {/* Hidden info */}
-        {activeTab === 'hidden' && (
-          <View style={styles.hiddenInfo}>
-            <View style={styles.hiddenHeader}>
-              <Text style={styles.hiddenTitle}>Hidden by default</Text>
-              {hiddenPhotos.length > 0 && (
-                <Pressable
-                  onPress={handleToggleSelectAll}
-                  style={styles.includeAllButton}
-                >
-                  <Text style={styles.includeAllText}>
-                    {allSelectedInTab ? 'Remove All' : 'Include All'}
-                  </Text>
-                </Pressable>
-              )}
-            </View>
-            <Text style={styles.hiddenSubtitle}>
-              Screenshots and downloads are tucked away. Tap any photo to include it.
-            </Text>
-          </View>
-        )}
-
-        {/* Photo Grid */}
-        <View style={styles.gridContainer}>
-          {gridPhotos.length === 0 ? (
-            <View style={styles.tabEmptyState}>
-              <Ionicons name="image-outline" size={40} color={Colors.textMuted} />
-              <Text style={styles.tabEmptyTitle}>
-                {activeTab === 'included' ? 'No recommended photos' : 'No hidden photos'}
-              </Text>
-              <Text style={styles.tabEmptySubtitle}>
-                {activeTab === 'included'
-                  ? 'Try checking Hidden for screenshots or downloads.'
-                  : 'Everything looks good in your camera roll.'}
-              </Text>
-              {activeTab === 'included' && hiddenPhotos.length > 0 && (
-                <Pressable
-                  style={styles.tabEmptyAction}
-                  onPress={() => setActiveTab('hidden')}
-                >
-                  <Text style={styles.tabEmptyActionText}>View Hidden Photos</Text>
-                </Pressable>
-              )}
-            </View>
+        {/* Photo grid */}
+        <Animated.View entering={FadeIn.duration(300)} style={styles.gridContainer}>
+          {photoSections.length === 0 ? (
+            renderEmpty()
           ) : (
-            <PhotoGrid
-              photos={gridPhotos}
-              selectable
-              selectedIds={selectedIds}
-              onSelectionChange={handleSelectionChange}
-              showOwnerAvatar={false}
+            <SectionList
+              sections={photoSections}
+              keyExtractor={(item) => item.id}
+              renderSectionHeader={renderSectionHeader}
+              renderItem={() => null}
+              renderSectionFooter={renderSection}
+              stickySectionHeadersEnabled={false}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
             />
           )}
-        </View>
-
-        {/* Floating Add Button */}
-        <Animated.View
-          entering={FadeIn.delay(500).duration(400)}
-          style={styles.floatingButtonContainer}
-        >
-          <View style={styles.privacyBadge}>
-            <Ionicons name="lock-closed" size={14} color={Colors.textSecondary} />
-            <Text style={styles.privacyText}>
-              Only selected photos are uploaded
-            </Text>
-          </View>
-
-          {hasSelection ? (
-            <Pressable
-              onPress={handleAddPhotos}
-              style={styles.addButtonPressable}
-              disabled={uploading}
-            >
-              <LinearGradient
-                colors={[Colors.accent, Colors.accentDark]}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.addButton}
-              >
-                <Text style={styles.addButtonText}>
-                  Add {selectedIds.length} Photos to World
-                </Text>
-              </LinearGradient>
-            </Pressable>
-          ) : (
-            <View style={styles.addButtonDisabled}>
-              <Text style={styles.addButtonTextDisabled}>
-                Select photos to add
-              </Text>
-            </View>
-          )}
         </Animated.View>
 
-        {/* Upload Progress Overlay */}
-        {uploading && renderUploadProgress()}
+        {/* Bottom bar */}
+        <ReviewBottomBar
+          selectedCount={selectedIds.size}
+          totalVideoSize={totalVideoSize}
+          onAddPhotos={handleAddPhotos}
+          disabled={selectedIds.size === 0}
+          uploading={uploading}
+        />
 
-        {/* Success Toast */}
+        {/* Upload progress overlay */}
+        {uploading && renderUploadOverlay()}
+
+        {/* Success toast */}
         <Toast
           visible={toast.visible}
           message={toast.message}
@@ -662,17 +681,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-
-  // Center container for loading/empty/permission states
   centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: Spacing.xl,
   },
-
-  // Permission denied
-  permissionIcon: {
+  iconContainer: {
     width: 100,
     height: 100,
     borderRadius: 50,
@@ -683,14 +698,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  permissionTitle: {
+  stateTitle: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.xl,
     fontWeight: 'bold',
     marginBottom: Spacing.sm,
     textAlign: 'center',
   },
-  permissionMessage: {
+  stateMessage: {
     color: Colors.textSecondary,
     fontSize: Typography.sizes.md,
     textAlign: 'center',
@@ -717,154 +732,112 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: Typography.sizes.md,
   },
-
-  // Loading
-  loadingText: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sizes.md,
-    marginTop: Spacing.lg,
-  },
-
-  // Empty state
-  emptyIcon: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: Colors.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: Spacing.xl,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  emptyTitle: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.xl,
-    fontWeight: 'bold',
-    marginBottom: Spacing.sm,
-    textAlign: 'center',
-  },
-  emptyMessage: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sizes.md,
-    textAlign: 'center',
-    marginBottom: Spacing.xl,
-    lineHeight: Typography.sizes.md * 1.5,
-  },
-
-  // Header
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  closeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  headerContent: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  headerTitle: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.lg,
-    fontWeight: 'bold',
-  },
-  headerSubtitle: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sizes.sm,
-  },
-  selectAllButton: {
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-  },
-  selectAllText: {
-    color: Colors.accent,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '600',
-  },
-
-  // Tabs
-  tabSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.sm,
-    gap: Spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  tabItem: {
-    paddingVertical: Spacing.sm,
-    position: 'relative',
-  },
-  tabText: {
-    color: Colors.textMuted,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '600',
-  },
-  tabTextActive: {
-    color: Colors.textPrimary,
-  },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: -1,
-    left: 0,
-    right: 0,
-    height: 2,
-    backgroundColor: Colors.accent,
-    borderRadius: Radius.full,
-  },
-
-  // Scan complete banner
-  scanComplete: {
-    marginHorizontal: Spacing.lg,
-    marginTop: Spacing.md,
-    borderRadius: Radius.md,
-    overflow: 'hidden',
-  },
-  scanCompleteGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    paddingVertical: Spacing.sm,
-  },
-  scanText: {
-    color: Colors.success,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '500',
-  },
-
-  // Grid
   gridContainer: {
     flex: 1,
   },
-  tabEmptyState: {
+  listContent: {
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.md,
+  },
+  sectionHeader: {
+    paddingVertical: Spacing.sm,
+    paddingTop: Spacing.md,
+  },
+  sectionTitle: {
+    color: Colors.textPrimary,
+    fontSize: Typography.sizes.sm,
+    fontWeight: '600',
+  },
+  photoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: GAP,
+  },
+  photoItem: {
+    position: 'relative',
+    borderRadius: Radius.sm,
+    overflow: 'hidden',
+  },
+  photoImage: {
+    width: '100%',
+    height: '100%',
+  },
+  bufferPhoto: {
+    opacity: 0.7,
+  },
+  burstBadge: {
+    position: 'absolute',
+    bottom: Spacing.xs,
+    left: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    gap: 2,
+  },
+  burstCount: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: '600',
+    color: Colors.textPrimary,
+  },
+  durationBadge: {
+    position: 'absolute',
+    bottom: Spacing.xs,
+    right: Spacing.xs,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: Radius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  durationText: {
+    fontSize: Typography.sizes.xs,
+    fontWeight: '500',
+    color: Colors.textPrimary,
+  },
+  livePhotoBadge: {
+    position: 'absolute',
+    top: Spacing.xs,
+    left: Spacing.xs,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionCircle: {
+    position: 'absolute',
+    bottom: Spacing.xs,
+    right: Spacing.xs,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: Colors.textPrimary,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  selectionCircleActive: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  emptyState: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.xxl,
   },
-  tabEmptyTitle: {
+  emptyTitle: {
     color: Colors.textPrimary,
     fontSize: Typography.sizes.lg,
     fontWeight: '600',
     marginTop: Spacing.md,
   },
-  tabEmptySubtitle: {
+  emptySubtitle: {
     color: Colors.textSecondary,
     fontSize: Typography.sizes.sm,
     textAlign: 'center',
@@ -872,110 +845,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.sm,
     maxWidth: 260,
   },
-  tabEmptyAction: {
-    marginTop: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.glass,
-    borderWidth: 1,
-    borderColor: Colors.glassBorder,
-  },
-  tabEmptyActionText: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '600',
-  },
-
-  // Hidden info
-  hiddenInfo: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  hiddenHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  hiddenTitle: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.md,
-    fontWeight: '600',
-  },
-  hiddenSubtitle: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sizes.sm,
-    marginTop: Spacing.xs,
-    lineHeight: Typography.sizes.sm * 1.4,
-  },
-  includeAllButton: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    backgroundColor: Colors.glass,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.glassBorder,
-  },
-  includeAllText: {
-    color: Colors.accent,
-    fontSize: Typography.sizes.sm,
-    fontWeight: '600',
-  },
-
-  // Floating button
-  floatingButtonContainer: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    paddingTop: Spacing.md,
-    backgroundColor: Colors.background,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  privacyBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    marginBottom: Spacing.md,
-    opacity: 0.7,
-  },
-  privacyText: {
-    color: Colors.textSecondary,
-    fontSize: Typography.sizes.xs,
-  },
-  addButtonPressable: {
-    borderRadius: Radius.xl,
-    overflow: 'hidden',
-  },
-  addButton: {
-    paddingVertical: Spacing.md + 2,
-    borderRadius: Radius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  addButtonText: {
-    color: Colors.textPrimary,
-    fontSize: Typography.sizes.lg,
-    fontWeight: 'bold',
-  },
-  addButtonDisabled: {
-    backgroundColor: Colors.surface,
-    paddingVertical: Spacing.md + 2,
-    borderRadius: Radius.xl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  addButtonTextDisabled: {
-    color: Colors.textMuted,
-    fontSize: Typography.sizes.lg,
-    fontWeight: '600',
-  },
-
-  // Upload overlay
   uploadOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.8)',
